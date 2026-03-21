@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 # 🎓 SGU Chatbot - RAG Hỗ trợ Sinh viên
 **Đồ án môn: Các Công nghệ Lập trình Hiện đại**  
 **Stack: LangChain + Gemini 2.0 Flash + ChromaDB + Streamlit**  
@@ -227,3 +228,6 @@ streamlit run app.py
 =======
 # LangChain-RAG-Chatbot-V2
 >>>>>>> dd8cd39cc3cc280d931b27ab07e768715e17b258
+=======
+
+>>>>>>> 50481ee79c6c90fcca5815e908196f079221c791
