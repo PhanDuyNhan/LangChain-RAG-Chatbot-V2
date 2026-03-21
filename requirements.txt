@@ -1,0 +1,32 @@
+# =============================================================
+# REQUIREMENTS - RAG Chatbot SGU
+# Tất cả thư viện đều MIỄN PHÍ
+# Cài đặt: pip install -r requirements.txt
+# =============================================================
+
+# --- Framework chính ---
+langchain==0.3.25
+langchain-community==0.3.23
+langchain-google-genai==2.1.4
+langchain-groq==0.3.2
+langchain-ollama==0.3.3
+langchain-chroma==0.2.4
+
+# --- Vector Database local ---
+chromadb>=1.0.9
+
+# --- Đọc file PDF ---
+pypdf==5.4.0
+pdfplumber==0.11.6
+
+# --- UI ---
+streamlit==1.45.1
+
+# --- Tiện ích ---
+python-dotenv==1.1.0
+Pillow==11.2.1
+
+# --- KHÔNG cài google-generativeai ở đây ---
+# Máy bạn đã có google-generativeai 0.8.6 sẵn rồi
+# Cài thêm sẽ conflict với google-ai-generativelanguage từ langchain-google-genai
+# ingest.py dùng "import google.generativeai" sẽ tự dùng bản đã cài sẵn
