@@ -27,7 +27,7 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 # Tên model cho từng provider
 GEMINI_MODEL = "gemini-2.0-flash"          # Miễn phí, quota 1500/ngày
-GROQ_MODEL   = "llama-3.3-70b-versatile"   # Miễn phí, quota 14400/ngày
+GROQ_MODEL   = "llama-3.1-8b-instant"      # Miễn phí, quota 14400/ngày
 OLLAMA_MODEL = "qwen2.5:3b"                # Local, cần cài ollama pull qwen2.5:3b
 
 # Biến toàn cục lưu provider đang dùng (dùng cho UI)
