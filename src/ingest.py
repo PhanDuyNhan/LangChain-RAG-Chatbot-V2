@@ -8,15 +8,18 @@
 #   1. File KB có cấu trúc (KB001, KB002...): tách theo KB block
 #   2. File PDF thường (sổ tay gốc SGU, scan...): tách theo ký tự
 #
-# Tối ưu quota:
+# Tối ưu quota (đã cải thiện):
 #   - RateLimiter 90 RPM cho Gemini Embedding API
+#   - MIN DELAY 0.7s giữa mỗi embed call → tránh burst 429
+#   - JITTER ngẫu nhiên 0–0.3s → tránh thundering herd
 #   - Retry với exponential backoff khi 429
-#   - Batch delay sau mỗi 10 chunks tránh burst
+#   - Batch delay 2s sau mỗi 10 chunks (tăng từ 1s)
 # =============================================================
 
 import os
 import sys
 import time
+import random
 import functools
 from pathlib import Path
 from dotenv import load_dotenv
@@ -50,6 +53,11 @@ GOOGLE_API_KEY  = os.getenv("GOOGLE_API_KEY")
 CHROMA_DB_PATH  = os.getenv("CHROMA_DB_PATH", "./chroma_db")
 DATA_DIR        = os.getenv("DATA_DIR", "./data")
 COLLECTION_NAME = "sgu_knowledge_base"
+
+# Delay tối thiểu giữa các embed call (giây)
+# 90 RPM = 1.5 req/giây → min delay 0.7s để an toàn
+EMBED_MIN_DELAY  = float(os.getenv("EMBED_MIN_DELAY", "0.7"))
+EMBED_JITTER_MAX = 0.3   # jitter ngẫu nhiên thêm 0-0.3s
 
 
 # =============================================================
@@ -177,14 +185,16 @@ def split_documents(documents: list) -> list:
 
 
 # =============================================================
-# GEMINI EMBEDDINGS (với Rate Limit + Retry)
+# GEMINI EMBEDDINGS (với Rate Limit + Retry + Min Delay)
 # =============================================================
 class GeminiEmbeddings(Embeddings):
     """
     Gọi Gemini Embedding REST API với:
-      - RateLimiter 90 RPM → không bị 429 khi embed nhiều chunks
+      - RateLimiter 90 RPM    → không bị 429 khi embed nhiều chunks
+      - Min delay 0.7s/call   → tránh burst ngắn gây 429 tức thì
+      - Jitter 0–0.3s         → tránh thundering herd
       - Retry exponential backoff khi 429 xảy ra
-      - Batch delay 1s sau mỗi 10 chunks → tránh burst
+      - Batch delay 2s sau mỗi 10 chunks → tránh sustained burst
     """
 
     def __init__(self, api_key: str, model: str = "gemini-embedding-001"):
@@ -194,11 +204,24 @@ class GeminiEmbeddings(Embeddings):
             f"https://generativelanguage.googleapis.com/v1beta/"
             f"models/{model}:embedContent"
         )
+        self._last_call_time = 0.0  # Theo dõi thời điểm gọi cuối
+
+    def _throttle(self):
+        """Đảm bảo khoảng cách tối thiểu giữa các API call."""
+        now     = time.time()
+        elapsed = now - self._last_call_time
+        min_gap = EMBED_MIN_DELAY + random.uniform(0, EMBED_JITTER_MAX)
+
+        if elapsed < min_gap:
+            wait = min_gap - elapsed
+            time.sleep(wait)
+
+        self._last_call_time = time.time()
 
     def _embed_single(self, text: str, task_type: str) -> list:
-        """Gọi API 1 text, có retry backoff."""
+        """Gọi API 1 text, có throttle + retry backoff."""
 
-        @_with_retry(max_retries=3, base_delay=2.0)
+        @_with_retry(max_retries=4, base_delay=3.0)
         def _call():
             resp = requests.post(
                 self.url,
@@ -206,8 +229,14 @@ class GeminiEmbeddings(Embeddings):
                 json={"content": {"parts": [{"text": text}]}, "taskType": task_type},
                 timeout=30,
             )
+            if resp.status_code == 429:
+                # Raise để trigger retry backoff
+                raise Exception(f"429 Too Many Requests: {resp.text[:100]}")
             resp.raise_for_status()
             return resp.json()["embedding"]["values"]
+
+        # Throttle trước khi gọi
+        self._throttle()
 
         if _embed_limiter:
             with _embed_limiter:
@@ -222,13 +251,20 @@ class GeminiEmbeddings(Embeddings):
 
     def embed_documents(self, texts: list) -> list:
         embeddings = []
+        total      = len(texts)
         for i, text in enumerate(texts):
             vec = self._embed_single(text, task_type="retrieval_document")
             embeddings.append(vec)
-            # Batch delay sau mỗi 10 chunks → tránh burst gây 429
-            if (i + 1) % 10 == 0:
-                print(f"    → Đã embed {i+1}/{len(texts)} chunks...")
-                time.sleep(1.0)
+
+            # Progress log
+            if (i + 1) % 10 == 0 or (i + 1) == total:
+                print(f"    → Đã embed {i+1}/{total} chunks...")
+
+            # Batch delay sau mỗi 10 chunks (tăng 1s → 2s để an toàn)
+            if (i + 1) % 10 == 0 and (i + 1) < total:
+                print(f"    → Nghỉ 2s tránh quota burst...")
+                time.sleep(2.0)
+
         return embeddings
 
     def embed_query(self, text: str) -> list:

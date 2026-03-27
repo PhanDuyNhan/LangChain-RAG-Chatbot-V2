@@ -10,6 +10,18 @@
 #   - Rate limiter status
 # =============================================================
 
+import warnings
+import logging
+
+# ── Suppress torch.classes warning (từ chromadb dependency) ──
+# Lỗi này vô hại nhưng spam terminal; filter để giữ log sạch
+warnings.filterwarnings("ignore", message=".*torch.classes.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="torch")
+logging.getLogger("torch").setLevel(logging.ERROR)
+
+# ── Suppress FutureWarning từ bất kỳ package cũ nào ──
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 import streamlit as st
 import os
 import sys
@@ -145,10 +157,10 @@ def render_sidebar():
                 st.success(f"⚡ Cache tiết kiệm: **{hits} request**")
 
             # RPM hiện tại
-            limiter  = get_llm_limiter()
-            rpm_now  = limiter.requests_this_minute
-            rpm_color = "🟢" if rpm_now < 10 else ("🟡" if rpm_now < 13 else "🔴")
-            st.caption(f"{rpm_color} Gemini RPM: {rpm_now}/14 phút này")
+            limiter   = get_llm_limiter()
+            rpm_now   = limiter.requests_this_minute
+            rpm_color = "🟢" if rpm_now < 7 else ("🟡" if rpm_now < 9 else "🔴")
+            st.caption(f"{rpm_color} Gemini RPM: {rpm_now}/10 phút này")
 
         except ImportError:
             st.caption("quota_guard.py chưa được cài")

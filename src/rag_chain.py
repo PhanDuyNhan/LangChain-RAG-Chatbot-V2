@@ -10,6 +10,11 @@
 #   - ResponseCache   : câu hỏi lặp lại = 0 token
 #   - RateLimiter     : không bao giờ vượt 14 RPM Gemini
 #   - Exponential Backoff: tự retry khi 429 trước khi fallback
+#
+# ĐÃ SỬA:
+#   - Cache LLM instance per provider → không init lại mỗi query
+#   - Chỉ fallback khi gặp 429/quota, không loop khởi tạo mỗi lần
+#   - Dùng cached LLM nếu provider hiện tại còn hoạt động
 # =============================================================
 
 import os
@@ -86,6 +91,8 @@ class RAGChain:
 
     def __init__(self, force_provider: str = None):
         self.top_k = int(os.getenv("RETRIEVER_TOP_K", "4"))
+        # Cache LLM instances → không init lại mỗi lần query
+        self._llm_cache: Dict[str, Any] = {}
         self._init_components(force_provider)
 
     def _init_components(self, force_provider: str = None):
@@ -102,7 +109,24 @@ class RAGChain:
             search_type="similarity",
             search_kwargs={"k": self.top_k},
         )
-        self.llm, self.provider_name = get_llm(force_provider)
+
+        # Khởi tạo LLM đầu tiên và cache lại
+        self.llm, self.provider_name = self._get_or_init_llm(force_provider or "gemini")
+
+    def _get_or_init_llm(self, provider_key: str):
+        """
+        Lấy LLM từ cache hoặc khởi tạo mới.
+        Tránh init lại object mỗi lần query → tiết kiệm thời gian.
+        """
+        if provider_key in self._llm_cache:
+            llm, name = self._llm_cache[provider_key]
+            return llm, name
+        try:
+            llm, name = get_llm(force_provider=provider_key)
+            self._llm_cache[provider_key] = (llm, name)
+            return llm, name
+        except Exception as e:
+            raise RuntimeError(f"Không khởi tạo được {provider_key}: {e}")
 
     def _format_context(self, docs: list) -> str:
         parts = []
@@ -164,8 +188,9 @@ class RAGChain:
         Luồng query đầy đủ với tối ưu quota:
           1. Cache check   → trả ngay nếu có
           2. Vector search → lấy top_k chunks
-          3. LLM call      → rate limit + retry backoff + fallback chain
-          4. Parse JSON    → lưu cache
+          3. LLM call      → dùng cached LLM, rate limit + retry backoff
+          4. Fallback      → chỉ khi bị 429/quota
+          5. Parse JSON    → lưu cache
         """
         # ── Bước 1: Cache check ──
         if _rag_cache:
@@ -191,15 +216,23 @@ class RAGChain:
                 "from_cache":     False,
             }
 
-        # ── Bước 3: LLM Call ──
+        # ── Bước 3: LLM Call với cached instance ──
         context     = self._format_context(retrieved_docs)
         full_prompt = SYSTEM_PROMPT.format(context=context, question=question)
         raw_answer  = None
 
-        # Fallback: Gemini (3 retry) → Groq (1 retry) → Ollama
-        for provider_key, max_retries in [("gemini", 3), ("groq", 1), ("ollama", 0)]:
+        # Thứ tự fallback: Gemini → Groq → Ollama
+        # Dùng cached LLM nếu có, chỉ init mới khi cần fallback
+        fallback_order = [
+            ("gemini", 3),   # 3 retry với backoff
+            ("groq",   1),   # 1 retry
+            ("ollama", 0),   # 0 retry
+        ]
+
+        for provider_key, max_retries in fallback_order:
             try:
-                self.llm, self.provider_name = get_llm(force_provider=provider_key)
+                # Dùng cached LLM hoặc init mới nếu chưa có
+                llm, pname = self._get_or_init_llm(provider_key)
             except Exception as e:
                 print(f"[RAG] Không khởi tạo được {provider_key}: {str(e)[:60]}")
                 continue
@@ -209,28 +242,31 @@ class RAGChain:
                 try:
                     if provider_key == "gemini" and _llm_limiter:
                         with _llm_limiter:
-                            response = self.llm.invoke([HumanMessage(content=full_prompt)])
+                            response = llm.invoke([HumanMessage(content=full_prompt)])
                     else:
-                        response = self.llm.invoke([HumanMessage(content=full_prompt)])
+                        response = llm.invoke([HumanMessage(content=full_prompt)])
 
-                    raw_answer = response.content
+                    raw_answer         = response.content
+                    self.provider_name = pname
                     if _counter:
                         _counter.increment("gemini_llm" if provider_key == "gemini" else "groq")
                     success = True
                     break
 
                 except Exception as e:
-                    err   = str(e)
+                    err    = str(e)
                     is_429 = any(k in err for k in [
                         "429", "quota", "ResourceExhausted", "RESOURCE_EXHAUSTED",
                     ])
                     if is_429 and attempt < max_retries:
-                        delay = 2.0 * (2 ** attempt)  # 2, 4, 8 giây
-                        print(f"[RAG] {self.provider_name} 429, retry sau {delay:.0f}s "
+                        delay = 2.0 * (2 ** attempt)  # 2s → 4s → 8s
+                        print(f"[RAG] {pname} 429, retry sau {delay:.0f}s "
                               f"({attempt+1}/{max_retries})...")
                         time.sleep(delay)
                     elif is_429:
-                        print(f"[RAG] {self.provider_name} hết quota → fallback tiếp theo")
+                        # Xóa khỏi cache để lần sau init lại (có thể quota đã reset)
+                        self._llm_cache.pop(provider_key, None)
+                        print(f"[RAG] {pname} hết quota → fallback tiếp theo")
                         break
                     else:
                         raise  # Lỗi không phải 429 → raise ngay
@@ -271,7 +307,7 @@ class RAGChain:
         return parsed
 
     def switch_provider(self, provider: str):
-        self.llm, self.provider_name = get_llm(force_provider=provider)
+        self.llm, self.provider_name = self._get_or_init_llm(provider)
 
 
 # =============================================================

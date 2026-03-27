@@ -8,6 +8,11 @@ langchain-groq==0.3.2
 langchain-ollama==0.3.3
 langchain-chroma==0.2.4
 
+# --- Google Gemini SDK (MỚI - thay thế google-generativeai đã deprecated) ---
+# google-generativeai ĐÃ BỊ DEPRECATED - KHÔNG dùng nữa
+# Dùng google-genai >= 1.0 cho multimodal.py (File API, Vision)
+google-genai>=1.0.0
+
 # --- Vector Database ---
 chromadb>=1.0.9
 

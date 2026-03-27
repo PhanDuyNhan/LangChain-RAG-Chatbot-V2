@@ -7,6 +7,11 @@
 #   1. RateLimiter    : Không bao giờ vượt quá RPM thực tế của Gemini Free
 #   2. Exponential Backoff: Khi bị 429, chờ 2→4→8 giây rồi tự thử lại
 #   3. ResponseCache  : Câu hỏi lặp lại → trả kết quả cũ (0 token tốn)
+#
+# ĐÃ SỬA:
+#   - LLM RPM: 14 → 10 (an toàn hơn cho Gemini Free tier)
+#   - Embed RPM: 90 → 60 (Gemini Free thực tế hay bị 429 ở 90)
+#   - Vision RPM: 14 → 10 (dùng chung quota LLM)
 # =============================================================
 
 import time
@@ -24,32 +29,37 @@ class RateLimiter:
     """
     Giới hạn số request trong cửa sổ 60 giây.
 
-    Gemini Free thực tế:
-      - LLM (Flash):  15 RPM  → dùng 14 để an toàn
-      - Embedding:    100 RPM → dùng 90 để an toàn
-      - Vision:       15 RPM  → dùng 14 (dùng chung quota LLM)
+    Gemini Free thực tế (đã điều chỉnh conservative hơn):
+      - LLM (Flash):  15 RPM danh nghĩa → dùng 10 để an toàn
+      - Embedding:    100 RPM danh nghĩa → dùng 60 để an toàn
+      - Vision:       15 RPM danh nghĩa → dùng 10 (dùng chung quota LLM)
+
+    Lý do dùng thấp hơn giới hạn danh nghĩa:
+      - Gemini Free có "burst limit" ngắn hạn thấp hơn RPM
+      - Nhiều request đồng thời từ Streamlit (sidebar + chat) có thể cộng dồn
+      - Đệm an toàn tránh 429 tạm thời
 
     Khi đã đủ RPM trong 60 giây gần nhất → tự động chờ
     đến khi có slot trống, không cần người dùng làm gì.
     """
 
-    def __init__(self, rpm: int = 14, name: str = "Gemini"):
-        self.rpm = rpm
-        self.name = name
+    def __init__(self, rpm: int = 10, name: str = "Gemini"):
+        self.rpm    = rpm
+        self.name   = name
         self.window = 60.0
         self._timestamps: deque = deque()
         self._lock = threading.Lock()
 
     def _wait_if_needed(self):
         with self._lock:
-            now = time.time()
+            now    = time.time()
             cutoff = now - self.window
             while self._timestamps and self._timestamps[0] < cutoff:
                 self._timestamps.popleft()
 
             if len(self._timestamps) >= self.rpm:
-                oldest = self._timestamps[0]
-                wait_time = (oldest + self.window) - now + 0.2
+                oldest    = self._timestamps[0]
+                wait_time = (oldest + self.window) - now + 0.5  # +0.5s buffer
                 if wait_time > 0:
                     print(f"[RateLimiter] {self.name}: đạt {self.rpm} RPM, chờ {wait_time:.1f}s...")
                     time.sleep(wait_time)
@@ -70,9 +80,10 @@ class RateLimiter:
 
 
 # Singletons — dùng chung toàn app
-_llm_limiter    = RateLimiter(rpm=14, name="Gemini LLM")
-_embed_limiter  = RateLimiter(rpm=90, name="Gemini Embed")
-_vision_limiter = RateLimiter(rpm=14, name="Gemini Vision")
+# RPM đã giảm so với trước để an toàn hơn với Gemini Free
+_llm_limiter    = RateLimiter(rpm=10, name="Gemini LLM")
+_embed_limiter  = RateLimiter(rpm=60, name="Gemini Embed")
+_vision_limiter = RateLimiter(rpm=10, name="Gemini Vision")
 
 
 def get_llm_limiter()    -> RateLimiter: return _llm_limiter
@@ -100,7 +111,7 @@ def with_retry(max_retries: int = 3, base_delay: float = 2.0):
                     return func(*args, **kwargs)
                 except Exception as e:
                     err_str = str(e)
-                    is_429 = any(kw in err_str for kw in [
+                    is_429  = any(kw in err_str for kw in [
                         "429", "quota", "ResourceExhausted",
                         "RESOURCE_EXHAUSTED", "rate limit", "too many requests",
                     ])
@@ -130,10 +141,10 @@ class SimpleCache:
     """
 
     def __init__(self, max_size: int = 200):
-        self._cache: dict = {}
+        self._cache: dict  = {}
         self._order: deque = deque()
-        self._max_size = max_size
-        self._lock = threading.Lock()
+        self._max_size     = max_size
+        self._lock         = threading.Lock()
 
     def _key(self, *args) -> str:
         combined = "|".join(str(a) for a in args)
