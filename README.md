@@ -352,3 +352,9 @@ Tu `requirements.txt`:
   - Gemini File API
   - Structured Output
   - Token Management / Cost Optimization
+
+
+
+source .venv/bin/activate
+streamlit run app.py --server.port 8502
+

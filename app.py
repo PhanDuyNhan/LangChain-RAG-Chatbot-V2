@@ -39,29 +39,108 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .main-header {
-        background: linear-gradient(135deg, #1a3a6e 0%, #2d6a9f 100%);
-        padding: 20px; border-radius: 10px; color: white;
-        text-align: center; margin-bottom: 20px;
-    }
-    .provider-badge {
-        background-color: #28a745; color: white;
-        padding: 4px 12px; border-radius: 20px;
-        font-size: 0.85em; font-weight: bold;
-    }
-    .cache-badge {
-        background-color: #17a2b8; color: white;
-        padding: 4px 10px; border-radius: 20px;
-        font-size: 0.8em; font-weight: bold;
-    }
-    .reasoning-box {
-        background-color: #fff3cd; border-left: 4px solid #ffc107;
-        padding: 12px; border-radius: 5px; margin: 8px 0;
-        color: #2b2111;
-    }
-    .reasoning-box b {
-        color: #2b2111;
-    }
+/* ════════════════════════════════════════
+   CHATGPT-LIKE LAYOUT
+   ════════════════════════════════════════ */
+
+/* Ẩn Streamlit chrome */
+[data-testid="stHeader"] { display: none !important; }
+.stApp > header         { display: none !important; }
+footer                  { display: none !important; }
+#MainMenu               { display: none !important; }
+
+/* Block container — sát trên, không bottom padding thừa */
+.block-container {
+    padding-top: 0.5rem !important;
+    padding-bottom: 0.2rem !important;
+    max-width: 860px;
+}
+
+/* ── Tabs: compact, sát top ── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    margin-bottom: 0;
+    padding-bottom: 0;
+}
+.stTabs [data-baseweb="tab"] {
+    padding: 6px 20px;
+    font-size: 0.83rem;
+    font-weight: 500;
+    border-radius: 0;
+}
+.stTabs [aria-selected="true"] { font-weight: 700; }
+
+/* ── Chat container: stVerticalBlock > stVerticalBlockBorderWrapper là cấu trúc của st.container() ── */
+[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlockBorderWrapper"] {
+    height: calc(100vh - 200px) !important;
+    min-height: 200px;
+    overflow-y: auto !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+}
+/* Override cho sidebar và columns — không apply height */
+[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"],
+[data-testid="stColumn"] [data-testid="stVerticalBlockBorderWrapper"],
+[data-testid="stExpanderDetails"] [data-testid="stVerticalBlockBorderWrapper"] {
+    height: auto !important;
+    overflow-y: visible !important;
+    min-height: unset !important;
+}
+
+/* ── Chat messages ── */
+[data-testid="stChatMessage"] { padding: 6px 0; }
+
+/* ── Chat input bar ── */
+[data-testid="stChatInput"] textarea {
+    border-radius: 12px !important;
+    font-size: 0.93rem;
+}
+
+/* ── Welcome screen: sample question cards ── */
+.sample-card button {
+    text-align: left !important;
+    padding: 10px 14px !important;
+    font-size: 0.82rem !important;
+    line-height: 1.4 !important;
+    white-space: normal !important;
+    height: auto !important;
+    border-radius: 12px !important;
+    border: 1px solid rgba(255,255,255,0.15) !important;
+    background: rgba(255,255,255,0.04) !important;
+    transition: background 0.15s, border-color 0.15s !important;
+}
+.sample-card button:hover {
+    background: rgba(255,255,255,0.09) !important;
+    border-color: rgba(255,255,255,0.3) !important;
+}
+
+/* ── Sidebar ── */
+[data-testid="stSidebar"] {
+    min-width: 250px !important;
+    max-width: 280px !important;
+}
+
+/* ── Badges ── */
+.provider-badge {
+    background: #28a745; color: #fff;
+    padding: 3px 10px; border-radius: 20px;
+    font-size: 0.76em; font-weight: 700;
+}
+.cache-badge {
+    background: #17a2b8; color: #fff;
+    padding: 3px 8px; border-radius: 20px;
+    font-size: 0.74em; font-weight: 700;
+}
+
+/* ── Reasoning box ── */
+.reasoning-box {
+    background: #fff3cd; border-left: 4px solid #ffc107;
+    padding: 10px 12px; border-radius: 5px; margin: 8px 0;
+    color: #2b2111; font-size: 0.88em;
+}
+.reasoning-box b { color: #2b2111; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -205,60 +284,122 @@ def render_sidebar():
 # TAB 1: CHAT TÀI LIỆU (RAG - Mức 1)
 # =============================================================
 def render_tab_chat():
-    st.markdown("### 💬 Chat với Tài liệu SGU")
-    st.markdown("*Hỏi về quy định học vụ, học phí, thủ tục, học bổng...*")
-
     if not check_db_ready():
         st.error("⚠️ Chưa có dữ liệu! Hãy chạy: `python src/ingest.py`")
         return
 
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
+    if "pending_question" not in st.session_state:
+        st.session_state.pending_question = None
 
-    for chat in st.session_state.chat_history:
-        with st.chat_message("user"):
-            st.write(chat["question"])
-        with st.chat_message("assistant"):
-            _render_rag_response(chat["response"])
-
-    col1, col2 = st.columns([4, 1])
-    with col1:
-        question = st.text_input(
-            "Câu hỏi:", placeholder="Thủ tục bảo lưu kết quả học tập như thế nào?",
-            key="chat_input", label_visibility="collapsed",
-        )
-    with col2:
-        search_btn = st.button("🔍 Tìm kiếm", type="primary", use_container_width=True)
-
-    st.markdown("**💡 Câu hỏi mẫu:**")
-    sample_cols = st.columns(3)
     samples = [
-        "Học phí CNTT năm 2025?", "Điều kiện học bổng khuyến khích?",
-        "Cách đóng học phí online?", "Thủ tục xin hoãn thi?",
-        "Điều kiện tốt nghiệp?",   "Số điện thoại phòng Đào tạo?",
+        "Học phí CNTT năm 2025?",        "Điều kiện học bổng khuyến khích?",
+        "Cách đóng học phí online?",      "Thủ tục xin hoãn thi?",
+        "Điều kiện tốt nghiệp?",          "Số điện thoại phòng Đào tạo?",
     ]
-    for i, sample in enumerate(samples):
-        if sample_cols[i % 3].button(sample, key=f"sample_{i}", use_container_width=True):
-            question   = sample
-            search_btn = True
+    has_history = bool(st.session_state.chat_history)
 
-    if search_btn and question.strip():
+    # ══════════════════════════════════════════════
+    # Vùng chat — fill toàn bộ height còn lại
+    # ══════════════════════════════════════════════
+    # JS: tìm đúng chat container (parent=stVerticalBlock), set height động, auto-scroll
+    import streamlit.components.v1 as components
+    components.html(f"""
+    <script>
+    (function() {{
+        const run = () => {{
+            const doc = window.parent.document;
+            const all = [...doc.querySelectorAll('[data-testid="stVerticalBlockBorderWrapper"]')];
+
+            // Tìm đúng chat container: parent phải là stVerticalBlock, không nằm trong sidebar/column
+            const box = all.find(el =>
+                el.parentElement?.getAttribute('data-testid') === 'stVerticalBlock' &&
+                !el.closest('[data-testid="stSidebar"]') &&
+                !el.closest('[data-testid="stColumn"]') &&
+                !el.closest('[data-testid="stExpanderDetails"]')
+            );
+            if (!box) return;
+
+            // Tính height còn lại: viewport - vị trí top của box - chiều cao chat input - margin
+            const chatInput = doc.querySelector('[data-testid="stChatInput"]');
+            const inputH = chatInput ? chatInput.offsetHeight + 8 : 72;
+            const boxTop = box.getBoundingClientRect().top;
+            const availH = Math.max(200, window.parent.innerHeight - boxTop - inputH - 4);
+            box.style.height = availH + 'px';
+            box.style.overflowY = 'auto';
+            box.style.border = 'none';
+            box.style.boxShadow = 'none';
+            box.style.borderRadius = '0';
+
+            // Auto-scroll xuống cuối nếu đang có tin nhắn
+            if ({str(has_history).lower()}) {{
+                box.scrollTop = box.scrollHeight;
+            }}
+        }};
+        run();
+        setTimeout(run, 300);
+    }})();
+    </script>
+    """, height=0)
+
+    with st.container(height=900, border=True):  # border=True để CSS target được element
+
+        if not has_history:
+            # ── WELCOME SCREEN ──
+            st.markdown("""
+            <div style="text-align:center; padding: 48px 0 28px;">
+                <div style="font-size:2.8rem; line-height:1; margin-bottom:10px;">🎓</div>
+                <h2 style="font-size:1.5rem; font-weight:700; margin:0 0 6px;
+                           letter-spacing:-0.01em;">SGU Chatbot</h2>
+                <p style="color:rgba(255,255,255,0.45); font-size:0.87rem; margin:0;">
+                    Hỏi bất cứ điều gì về Trường Đại học Sài Gòn
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Sample questions — 2 hàng × 3
+            for row_start in (0, 3):
+                cols = st.columns(3)
+                for j, sample in enumerate(samples[row_start:row_start + 3]):
+                    if cols[j].button(sample, key=f"sample_{row_start + j}",
+                                      use_container_width=True):
+                        st.session_state.pending_question = sample
+
+        else:
+            # ── CHAT MESSAGES ──
+            # Nút "New chat" nhỏ ở góc phải trong vùng messages
+            _, clr = st.columns([11, 1])
+            with clr:
+                if st.button("🗑️", help="Xóa lịch sử", key="clear_history"):
+                    st.session_state.chat_history = []
+                    st.rerun()
+
+            for chat in st.session_state.chat_history:
+                with st.chat_message("user"):
+                    st.write(chat["question"])
+                with st.chat_message("assistant"):
+                    _render_rag_response(chat["response"])
+
+
+    # ══════════════════════════════════════════════
+    # Input — Streamlit render sticky bottom tự động
+    # ══════════════════════════════════════════════
+    question = st.chat_input("Hỏi về học phí, học bổng, thủ tục...")
+
+    if st.session_state.pending_question:
+        question = st.session_state.pending_question
+        st.session_state.pending_question = None
+
+    if question and question.strip():
         with st.spinner("🔍 Đang tìm kiếm..."):
             try:
                 rag      = load_rag_chain()
                 response = rag.query(question)
                 st.session_state.chat_history.append({"question": question, "response": response})
-                with st.chat_message("user"):
-                    st.write(question)
-                with st.chat_message("assistant"):
-                    _render_rag_response(response)
+                st.rerun()
             except Exception as e:
                 st.error(f"❌ Lỗi: {str(e)}")
-
-    if st.session_state.chat_history:
-        if st.button("🗑️ Xóa lịch sử chat", type="secondary"):
-            st.session_state.chat_history = []
-            st.rerun()
 
 
 def _render_rag_response(response: dict):
@@ -307,8 +448,7 @@ def _render_rag_response(response: dict):
 # TAB 2: PHÂN TÍCH ĐA PHƯƠNG THỨC (Mức 2)
 # =============================================================
 def render_tab_multimodal():
-    st.markdown("### 📸 Phân tích Đa Phương Thức (Multimodal - Mức 2)")
-    st.markdown("*Phân tích ảnh tài liệu SGU hoặc upload video/audio*")
+    st.markdown('<p class="page-title">📸 Phân tích ảnh tài liệu SGU hoặc upload video/audio (Mức 2)</p>', unsafe_allow_html=True)
 
     with st.expander("ℹ️ Kỹ thuật Mức 2 được áp dụng"):
         st.markdown("""
@@ -556,18 +696,11 @@ def _render_media_result(result: dict):
 # MAIN
 # =============================================================
 def main():
-    st.markdown("""
-    <div class="main-header">
-        <h1>🎓 SGU Chatbot - Hỗ trợ Sinh viên</h1>
-        <p>Trường Đại học Sài Gòn</p>
-    </div>
-    """, unsafe_allow_html=True)
-
     render_sidebar()
 
     tab1, tab2 = st.tabs([
-        "💬 Chat Tài liệu (Mức 1)",
-        "📸 Phân tích Đa phương thức (Mức 2)",
+        "💬 Chat Tài liệu",
+        "📸 Đa phương thức",
     ])
     with tab1:
         render_tab_chat()
