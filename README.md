@@ -76,11 +76,28 @@ pip install -r requirements.txt
 ### Buoc 2: Tao file `.env`
 
 ```env
-GOOGLE_API_KEY=AIza...
-GROQ_API_KEY=gsk_...
+# --- LLM CHÍNH: Google Gemini (miễn phí 1500 req/ngày) ---
+GOOGLE_API_KEY=
+
+# --- LLM BACKUP 1: Groq (miễn phí 14400 req/ngày) ---
+GROQ_API_KEY=
+
+# --- LLM BACKUP 2: Ollama (local, không giới hạn) ---
+# Mặc định chạy tại http://localhost:11434
+# Không cần key, chỉ cần cài Ollama và pull model:
+#   ollama pull qwen2.5:3b
 OLLAMA_BASE_URL=http://localhost:11434
-GEMINI_TEXT_MODEL=gemini-2.5-flash
-```
+
+# --- CẤU HÌNH CHROMA DB (vector database local) ---
+CHROMA_DB_PATH=./chroma_db
+
+# --- CẤU HÌNH RAG ---
+# Số chunk tối đa trả về khi tìm kiếm (top_k) - Token Management
+RETRIEVER_TOP_K=4
+
+# --- THƯ MỤC DỮ LIỆU ---
+DATA_DIR=./data
+
 
 Ghi chu:
 - `GOOGLE_API_KEY`: bat buoc
