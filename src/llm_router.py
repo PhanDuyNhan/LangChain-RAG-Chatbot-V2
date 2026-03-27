@@ -16,7 +16,7 @@ GOOGLE_API_KEY  = os.getenv("GOOGLE_API_KEY", "")
 GROQ_API_KEY    = os.getenv("GROQ_API_KEY", "")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
 GROQ_MODEL   = "llama-3.1-8b-instant"
 OLLAMA_MODEL = "qwen2.5:3b"
 
@@ -35,7 +35,7 @@ def _try_gemini():
         model=GEMINI_MODEL,
         google_api_key=GOOGLE_API_KEY,
         temperature=0.1,
-        max_output_tokens=1024,
+        max_output_tokens=int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "960")),
     )
 
 
@@ -63,7 +63,7 @@ def _try_ollama():
     return llm
 
 
-def get_llm(force_provider: str = None):
+def get_llm(force_provider: str = None, allow_fallback: bool = True):
     """
     Trả về (llm_object, provider_name).
     Tự động fallback Gemini → Groq → Ollama khi hết quota.
@@ -71,20 +71,20 @@ def get_llm(force_provider: str = None):
     global _current_provider
 
     providers = [
-        ("Gemini 2.0 Flash",  _try_gemini),
+        (f"Gemini {GEMINI_MODEL}",  _try_gemini),
         ("Groq llama-3.1-8b", _try_groq),
         ("Ollama qwen2.5:3b", _try_ollama),
     ]
 
     if force_provider:
         force_map = {
-            "gemini": ("Gemini 2.0 Flash",  _try_gemini),
+            "gemini": (f"Gemini {GEMINI_MODEL}",  _try_gemini),
             "groq":   ("Groq llama-3.1-8b", _try_groq),
             "ollama": ("Ollama qwen2.5:3b", _try_ollama),
         }
         if force_provider in force_map:
             forced   = force_map[force_provider]
-            providers = [forced] + [p for p in providers if p[0] != forced[0]]
+            providers = [forced] if not allow_fallback else [forced] + [p for p in providers if p[0] != forced[0]]
 
     errors = []
     for name, try_func in providers:
@@ -110,8 +110,8 @@ def get_llm(force_provider: str = None):
 
 def get_llm_info() -> dict:
     return {
-        "Gemini 2.0 Flash": {
-            "quota": "1,500 req/ngày",
+        f"Gemini {GEMINI_MODEL}": {
+            "quota": "5 RPM / 20 req-ngày (soft cap app: 4 RPM / 18 req-ngày)",
             "speed": "Nhanh",
             "cost":  "Miễn phí",
         },

@@ -15,10 +15,14 @@
 # =============================================================
 
 import time
+import json
+import os
 import hashlib
 import threading
 import functools
 from collections import deque
+from pathlib import Path
+from datetime import datetime
 from typing import Optional, Any, Callable
 
 
@@ -89,6 +93,25 @@ _vision_limiter = RateLimiter(rpm=10, name="Gemini Vision")
 def get_llm_limiter()    -> RateLimiter: return _llm_limiter
 def get_embed_limiter()  -> RateLimiter: return _embed_limiter
 def get_vision_limiter() -> RateLimiter: return _vision_limiter
+
+
+# =============================================================
+# 1b. CONFIG THEO QUOTA THỰC TẾ
+# =============================================================
+GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
+
+# Free tier người dùng gửi ảnh: 5 RPM / 20 RPD cho text-out.
+# Dùng soft cap thấp hơn một chút để tránh chạm ngưỡng cứng.
+GEMINI_LLM_RPM       = int(os.getenv("GEMINI_LLM_RPM", "4"))
+GEMINI_LLM_RPD_SOFT  = int(os.getenv("GEMINI_LLM_RPD_SOFT", "18"))
+GEMINI_EMBED_RPM     = int(os.getenv("GEMINI_EMBED_RPM", "60"))
+GEMINI_EMBED_RPD_SOFT = int(os.getenv("GEMINI_EMBED_RPD_SOFT", "900"))
+GEMINI_VISION_RPM    = int(os.getenv("GEMINI_VISION_RPM", "3"))
+GEMINI_VISION_RPD_SOFT = int(os.getenv("GEMINI_VISION_RPD_SOFT", "18"))
+
+_llm_limiter.rpm = GEMINI_LLM_RPM
+_embed_limiter.rpm = GEMINI_EMBED_RPM
+_vision_limiter.rpm = GEMINI_VISION_RPM
 
 
 # =============================================================
@@ -190,9 +213,9 @@ class RequestCounter:
     """Đếm số request đã dùng trong session để hiển thị lên UI."""
 
     QUOTAS = {
-        "gemini_llm":    1500,
-        "gemini_embed":  0,     # 0 = không hiển thị progress
-        "gemini_vision": 1500,  # Dùng chung quota LLM
+        "gemini_llm":    GEMINI_LLM_RPD_SOFT,
+        "gemini_embed":  GEMINI_EMBED_RPD_SOFT,
+        "gemini_vision": GEMINI_VISION_RPD_SOFT,
         "groq":          14400,
         "cache_hits":    0,
     }
@@ -217,3 +240,76 @@ _counter = RequestCounter()
 
 def get_counter() -> RequestCounter:
     return _counter
+
+
+# =============================================================
+# 5. DAILY SOFT CAP TRACKER
+# =============================================================
+class DailyQuotaTracker:
+    """
+    Theo dõi quota theo ngày bằng file JSON nhỏ trong project.
+
+    Mục tiêu: tránh trường hợp restart app rồi đếm lại từ 0, dẫn tới vô tình
+    đốt hết quota free của Gemini trong cùng một ngày.
+    """
+
+    def __init__(self, path: Optional[str] = None):
+        self.path = Path(path or os.getenv("QUOTA_STATE_FILE", ".quota_usage.json"))
+        self._lock = threading.Lock()
+        self._state = self._load()
+
+    def _today_key(self) -> str:
+        return datetime.now().strftime("%Y-%m-%d")
+
+    def _empty_state(self) -> dict:
+        return {"date": self._today_key(), "counts": {}}
+
+    def _load(self) -> dict:
+        try:
+            if self.path.exists():
+                data = json.loads(self.path.read_text(encoding="utf-8"))
+                if data.get("date") == self._today_key() and isinstance(data.get("counts"), dict):
+                    return data
+        except Exception:
+            pass
+        return self._empty_state()
+
+    def _save(self):
+        try:
+            self.path.write_text(
+                json.dumps(self._state, ensure_ascii=True, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _refresh_if_new_day(self):
+        today = self._today_key()
+        if self._state.get("date") != today:
+            self._state = {"date": today, "counts": {}}
+
+    def get(self, key: str) -> int:
+        with self._lock:
+            self._refresh_if_new_day()
+            return int(self._state["counts"].get(key, 0))
+
+    def increment(self, key: str, amount: int = 1) -> int:
+        with self._lock:
+            self._refresh_if_new_day()
+            counts = self._state["counts"]
+            counts[key] = int(counts.get(key, 0)) + amount
+            self._save()
+            return counts[key]
+
+    def remaining(self, key: str, soft_limit: int) -> int:
+        return max(0, soft_limit - self.get(key))
+
+    def can_consume(self, key: str, soft_limit: int, amount: int = 1) -> bool:
+        return (self.get(key) + amount) <= soft_limit
+
+
+_daily_tracker = DailyQuotaTracker()
+
+
+def get_daily_tracker() -> DailyQuotaTracker:
+    return _daily_tracker

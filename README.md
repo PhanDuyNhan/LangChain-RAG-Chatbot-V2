@@ -1,268 +1,354 @@
-# 🎓 SGU Chatbot - RAG & Multimodal Hỗ trợ Sinh viên
+# SGU Chatbot - RAG & Multimodal Ho Tro Sinh Vien
 
-**Môn học:** Các Công nghệ Lập trình Hiện đại  
-**Stack:** LangChain + Gemini 2.0 Flash + ChromaDB + Streamlit  
-**Chi phí:** MIỄN PHÍ HOÀN TOÀN  
-**Cấp độ đạt:** Mức 1 (RAG) + Mức 2 (Multimodal)
+Do an mon `Cac Cong nghe Lap trinh Hien dai`.
 
----
+Project tap trung vao 2 muc:
+- `Muc 1`: RAG chatbot tra loi dua tren tai lieu rieng cua SGU
+- `Muc 2`: Multimodal voi anh, video, audio bang Gemini
 
-## 📁 Cấu Trúc Dự Án
+Stack chinh:
+- `Streamlit`
+- `LangChain`
+- `Gemini API`
+- `ChromaDB`
+- `Groq` va `Ollama` dung lam fallback cho text chat
 
+## 1. Tinh nang chinh
+
+### Muc 1 - RAG chatbot
+- Doc file PDF/DOCX, lam sach va chia chunk
+- Tao embedding bang `gemini-embedding-001`
+- Luu vector vao `ChromaDB`
+- Truy xuat `top_k=4` chunk lien quan nhat
+- Tra loi bang tieng Viet dua tren context da truy xuat
+- Hien thi citation theo `trang + ten tai lieu`
+- Chuan hoa structured output de UI co the hien thi va xu ly tiep
+
+### Muc 2 - Multimodal
+- Phan tich anh tai lieu SGU bang `Visual Reasoning`
+- Trich xuat thong tin co cau truc tu anh
+- Phan tich video/audio bang `Gemini File API`
+- Upload media len server Google, cho xu ly, goi model qua `URI`
+- Tra ket qua dang JSON de hien thi len web
+
+### Toi uu quota Gemini free
+- Rate limiter theo RPM
+- Soft cap theo ngay de tranh het quota
+- Retry voi exponential backoff khi gap `429`
+- Cache response theo `question` hoac `file hash`
+- Fallback text model: `Gemini -> Groq -> Ollama`
+
+## 2. Cau truc project
+
+```text
+LangChain-RAG-Chatbot-V2/
+├── app.py
+├── quota_guard.py
+├── requirements.txt
+├── config.toml
+├── README.md
+├── data/
+│   └── cam_nang_sinh_vien_v2.pdf
+└── src/
+    ├── ingest.py
+    ├── llm_router.py
+    ├── rag_chain.py
+    ├── multimodal.py
+    └── __init__.py
 ```
-rag-chatbot-sgu/
-├── data/                          # Đặt file PDF/DOCX tại đây
-│   └── cam_nang_sinh_vien.pdf    # File tài liệu SGU
-├── src/
-│   ├── ingest.py         # [Mức 1] Load → Chunk → Embed → ChromaDB
-│   ├── llm_router.py     # Token Management: Gemini → Groq → Ollama
-│   ├── rag_chain.py      # [Mức 1] RAG Pipeline + Structured JSON Output
-│   ├── multimodal.py     # [Mức 2] Visual Reasoning + Gemini File API
-│   └── agent.py          # ReAct Agent + 4 custom tools
-├── app.py                # Streamlit UI (2 tab)
-├── .env                  # API keys (KHÔNG commit lên git!)
-└── requirements.txt      # Thư viện Python
-```
 
----
+Y nghia file:
+- `app.py`: giao dien Streamlit
+- `quota_guard.py`: limiter, cache, soft cap, counter
+- `src/ingest.py`: nap tai lieu, chunking, embedding, tao ChromaDB
+- `src/rag_chain.py`: pipeline RAG cho Muc 1
+- `src/llm_router.py`: router cho Gemini, Groq, Ollama
+- `src/multimodal.py`: anh, video, audio cho Muc 2
 
-## 🚀 Hướng Dẫn Cài Đặt
+## 3. Cai dat
 
-### Bước 1: Cài Python packages
+### Buoc 1: Cai thu vien
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Bước 2: Cài đặt API Keys trong file `.env`
+### Buoc 2: Tao file `.env`
 
-Tạo file `.env` ở thư mục gốc với nội dung sau:
-
+```env
+GOOGLE_API_KEY=AIza...
+GROQ_API_KEY=gsk_...
+OLLAMA_BASE_URL=http://localhost:11434
+GEMINI_TEXT_MODEL=gemini-2.5-flash
 ```
-GOOGLE_API_KEY=AIza...       # Bắt buộc
-GROQ_API_KEY=gsk_...         # Khuyến nghị (backup)
-```
 
-**Lấy Gemini API Key (bắt buộc):**
-1. Truy cập: https://aistudio.google.com/app/apikey
-2. Click "Create API Key" → Copy key
-3. Dán vào `.env`: `GOOGLE_API_KEY=AIza...`
+Ghi chu:
+- `GOOGLE_API_KEY`: bat buoc
+- `GROQ_API_KEY`: khuyen nghi de fallback
+- `OLLAMA_BASE_URL`: tuy chon
+- `GEMINI_TEXT_MODEL`: project hien dang toi uu cho quota free `gemini-2.5-flash`
 
-**Lấy Groq API Key (backup, khuyến nghị):**
-1. Truy cập: https://console.groq.com/keys
-2. Tạo key miễn phí → Copy
-3. Dán vào `.env`: `GROQ_API_KEY=gsk_...`
-
-### Bước 3 (Tùy chọn): Cài Ollama — LLM backup local
-
-Ollama chạy hoàn toàn trên máy, không cần internet, không giới hạn request. Dùng khi Gemini và Groq hết quota.
-
-**3.1 — Tải và cài đặt:**
-1. Truy cập: https://ollama.com/download
-2. Tải `OllamaSetup.exe` → cài đặt bình thường
-3. Ollama tự chạy nền sau khi cài (icon ở system tray)
-
-**3.2 — Download model:**
-```cmd
-ollama pull qwen2.5:3b
-```
-> Chờ 5–15 phút (model ~1.9GB). Xong khi hiện chữ `success`.
-
-**3.3 — Kiểm tra hoạt động:**
-```cmd
-ollama run qwen2.5:3b
-```
-Gõ `Xin chào` → model trả lời được là OK. Thoát: `/bye`
-
-**Yêu cầu phần cứng tối thiểu cho qwen2.5:3b:**
-
-| Thành phần | Tối thiểu | Khuyến nghị |
-|-----------|-----------|-------------|
-| RAM | 8 GB | 16 GB |
-| Dung lượng disk | 3 GB | 5 GB |
-| CPU | Intel i5 / Ryzen 5 | Intel i7 / Ryzen 7 |
-| GPU | Không bắt buộc | NVIDIA (nhanh hơn) |
-
-### Bước 4: Nạp tài liệu vào ChromaDB
+### Buoc 3: Nap du lieu vao ChromaDB
 
 ```bash
 python src/ingest.py
 ```
 
-Lần đầu chạy sẽ gọi Gemini Embedding API (~30–60 giây). Chỉ cần chạy **một lần** — dữ liệu được lưu vào `chroma_db/` và tái sử dụng.
+Lan dau se:
+- doc file trong thu muc `data/`
+- chia chunk
+- goi embedding API
+- luu ket qua vao `chroma_db/`
 
-### Bước 5: Chạy ứng dụng
+### Buoc 4: Chay ung dung
 
 ```bash
 streamlit run app.py
 ```
 
-Mở trình duyệt tại: http://localhost:8501
+Mac dinh mo tai:
+- `http://localhost:8501`
 
----
+## 4. Kien truc ky thuat
 
-## 🏗️ Kiến Trúc Kỹ Thuật
+### Muc 1 - RAG pipeline
 
-### Mức 1 — RAG Pipeline
+```text
+PDF/DOCX
+-> Load document
+-> Chunking
+-> Gemini Embedding
+-> ChromaDB
 
-```
-PDF/DOCX → PyPDFLoader / Docx2txtLoader
-         → RecursiveTextSplitter (chunk_size=1000, overlap=200)
-         → GeminiEmbeddings (gemini-embedding-001)
-         → ChromaDB (local persist)
-
-Query → Embed → similarity_search(k=4) → Context
-      → System Prompt + Context + Question → LLM
-      → Parse JSON → {"answer", "source", "confidence", "related_topics"}
-```
-
-**Kỹ thuật Cookbook áp dụng:**
-- *JSON Mode* — System prompt ép LLM trả về JSON thuần túy (không markdown)
-- *RAG with ChromaDB* — Vector search với Gemini Embeddings
-- *Chunking Strategy* — Tách KB block cho file có cấu trúc, RecursiveTextSplitter cho PDF thường
-
-### Mức 2 — Multimodal
-
-**Visual Reasoning (ảnh):**
-```
-Image → PIL resize (max 1024px) → base64
-      → Gemini 2.0 Flash Vision + System Prompt suy luận
-      → JSON: {image_type, extracted_data, reasoning, answer, recommendations}
+Question
+-> Retrieve top_k chunk
+-> Inject context vao prompt
+-> Gemini / Groq / Ollama
+-> Chuan hoa response
+-> Hien thi answer + source + confidence + related_topics
 ```
 
-**Gemini File API (video/audio):**
+Diem can nhan manh khi bao cao:
+- co `chunking strategy`
+- co `vector search`
+- co `citation`
+- co `structured output` de UI xu ly tiep
+
+### Muc 2 - Anh
+
+```text
+Image
+-> Resize toi da 1024px
+-> Gemini multimodal
+-> Visual reasoning
+-> JSON:
+   image_type
+   extracted_data
+   reasoning
+   answer
+   recommendations
+   confidence
 ```
-Video/Audio → genai.upload_file() → Google Server (48h)
-            → Chờ state ACTIVE
-            → Gemini đọc từ URI (không dùng base64)
-            → JSON: {summary, action_items, key_moments}
-            → genai.delete_file() dọn dẹp
+
+### Muc 2 - Video/Audio
+
+```text
+Media file
+-> Upload bang Gemini File API
+-> Cho file ACTIVE
+-> Goi model qua file URI
+-> JSON:
+   content_type
+   summary
+   action_items
+   key_moments
+   answer
+   confidence
+-> Xoa file tren server sau khi xu ly
 ```
 
-**Kỹ thuật Cookbook áp dụng:**
-- *File API (video_understanding)* — Upload file lớn lên server thay vì base64
-- *Structured Extraction* — Trích xuất thông tin ra JSON từ ảnh/video
-- *Visual Reasoning* — System prompt yêu cầu suy luận logic, không chỉ nhận diện
+## 5. Structured output
 
-### Structured Output — JSON Schema
+### RAG response schema
 
-**RAG Response:**
 ```json
 {
-  "answer": "Câu trả lời tiếng Việt",
-  "source": "Trang X, tài liệu Y",
-  "confidence": "high | medium | low",
-  "related_topics": ["topic1", "topic2"]
+  "answer": "Noi dung tra loi",
+  "source": "Trang 11, 13 (cam_nang_sinh_vien_v2.pdf)",
+  "confidence": "high",
+  "related_topics": [
+    "Thu tuc xin hoan thi?",
+    "Dieu kien va quy trinh hoan thi"
+  ],
+  "provider": "Gemini gemini-2.5-flash",
+  "from_cache": false,
+  "output_format": "json_schema_normalized",
+  "schema_version": "rag_v1"
 }
 ```
 
-**Image Analysis Response:**
+### Image response schema
+
 ```json
 {
-  "image_type": "loại tài liệu",
+  "image_type": "LICH THI",
   "extracted_data": {},
-  "reasoning": "suy luận logic",
-  "answer": "câu trả lời",
-  "recommendations": ["gợi ý 1"],
-  "confidence": "high | medium | low"
+  "reasoning": "Mon thi som nhat ...",
+  "answer": "Ban thi mon ...",
+  "recommendations": [
+    "On tap som",
+    "Kiem tra phong thi"
+  ],
+  "confidence": "high"
 }
 ```
 
-### System Prompt Design
+### Media response schema
 
-Prompt được thiết kế với các nguyên tắc:
+```json
+{
+  "content_type": "meeting_audio",
+  "summary": [
+    "Diem 1",
+    "Diem 2"
+  ],
+  "action_items": [
+    {
+      "task": "Viec can lam",
+      "assignee": "Nguoi phu trach",
+      "deadline": "Han chot"
+    }
+  ],
+  "key_moments": [
+    "00:35",
+    "03:10"
+  ],
+  "answer": "Tom tat ngan gon",
+  "confidence": "high"
+}
+```
 
-1. **Vai trò rõ ràng** — `"trợ lý sinh viên SGU"` → tránh lạc đề
-2. **Ràng buộc context** — `"CHỈ dùng thông tin trong [CONTEXT]"` → chống hallucination
-3. **JSON schema cứng** — Ví dụ output cụ thể → LLM ít lỗi format hơn
-4. **Citation bắt buộc** — `"source"` phải có trang → có thể kiểm tra lại
-5. **Confidence level** — Người dùng biết độ tin cậy của câu trả lời
+## 6. Quota va chi phi
 
-### Token Management
+Project duoc toi uu cho Gemini free tier.
 
-| Chiến lược | Mô tả |
-|-----------|-------|
-| Model nhẹ | Gemini 2.0 Flash (không dùng Pro) |
-| top_k=4 | Chỉ lấy 4 chunk context (~4000 ký tự) |
-| max_tokens=1024 | Giới hạn output của LLM |
-| Cache embedding | ChromaDB lưu disk, không embed lại |
-| Cache component | `st.cache_resource` tránh init lại mỗi click |
-| Fallback chain | Gemini → Groq → Ollama khi hết quota |
+Thiet lap dang dung trong app:
+- Text model: `gemini-2.5-flash`
+- Soft cap text: `4 RPM / 18 req-ngay`
+- Embedding soft cap: `60 RPM / 900 req-ngay`
+- Vision/File API soft cap: `3 RPM / 18 req-ngay`
 
----
+Ly do khong de sat gioi han:
+- tranh `429`
+- tranh burst request tu Streamlit
+- uu tien demo on dinh hon la tan dung toi da quota
 
-## 🛠️ Các Tool của Agent
+Neu Gemini vuot gioi han:
+- Muc 1 se fallback sang `Groq`
+- Neu can co the fallback tiep sang `Ollama`
 
-| Tool | Input | Output |
-|------|-------|--------|
-| `search_document` | Query string | Chunks từ ChromaDB |
-| `calculate_gpa` | `"Môn:điểm:TC,..."` | GPA hệ 4 + xếp loại |
-| `get_current_date` | (rỗng) | Ngày hiện tại |
-| `check_scholarship` | `"gpa:X,credits:N,..."` | Kết quả xét học bổng |
+## 7. Cach demo
 
----
+### Demo Muc 1
+1. Dat cau hoi ve hoc vu, hoc phi, hoan thi, tot nghiep
+2. Cho thay answer
+3. Mo `Structured Output JSON`
+4. Mo `Context da tim thay`
+5. Nhan manh citation theo trang/tai lieu
 
-## 📊 Quota Miễn Phí
+Vi du:
+- `Thu tuc xin hoan thi?`
+- `Dieu kien tot nghiep?`
+- `Hoc phi CNTT nam 2025?`
 
-| Provider | Quota/ngày | Dùng cho |
-|---------|-----------|---------|
-| Gemini 2.0 Flash | 1.500 req | LLM chính |
-| Gemini Embedding | 100 req/phút | Embedding (chỉ khi ingest) |
-| Groq llama-3.1-8b | 14.400 req | LLM backup 1 |
-| Ollama local | Không giới hạn | LLM backup 2 |
-| ChromaDB | Không giới hạn | Vector DB |
+### Demo Muc 2
+1. Upload anh lich thi / thong bao / hoa don
+2. Dat cau hoi yeu cau suy luan
+3. Cho thay:
+   - answer
+   - reasoning
+   - extracted_data
+   - JSON response
 
----
+Vi du:
+- `Lich thi nay toi can chuan bi gi? Mon nao thi som nhat?`
+- `Thong bao nay yeu cau toi lam gi va deadline la khi nao?`
 
-## 🔧 Xử Lý Lỗi Thường Gặp
+### Demo video/audio
+1. Upload file audio/video ngan
+2. Dat cau hoi tom tat noi dung
+3. Cho thay:
+   - summary
+   - action_items
+   - key_moments
 
-**Lỗi: "ChromaDB chưa được tạo"**
+## 8. Lien he voi rubric do an
+
+### Muc 1
+- Data pipeline: co
+- Chunking strategy: co
+- Embedding + vector DB: co
+- Context injection: co
+- Citation: co
+
+### Muc 2
+- Visual reasoning: co
+- Gemini File API: co
+- Structured extraction JSON: co
+
+Project hien tap trung hoan thien chac `Muc 1 + Muc 2`.
+Chua trien khai `Muc 3` va `Muc 4`.
+
+## 9. Loi thuong gap
+
+### Chua co ChromaDB
+
 ```bash
 python src/ingest.py
 ```
 
-**Lỗi: "Quota Gemini hết" (429)**
+### Het quota Gemini / loi 429
+- App da co limiter va backoff
+- Thu lai sau
+- Neu can, Muc 1 se fallback sang Groq/Ollama
 
-Hệ thống tự chuyển sang Groq → Ollama. Quota Gemini reset lúc 07:00 VN (00:00 UTC).
+### Sidebar hien text ky thuat la
+- Day la loi render Streamlit da duoc sua trong `app.py`
+- Chi can restart app neu ban dang chay ban cu
 
-**Lỗi: "Ollama không kết nối được"**
-```cmd
-# Kiểm tra Ollama đang chạy
-ollama list
+### Ollama khong chay
 
-# Khởi động thủ công (giữ cửa sổ CMD mở)
-ollama serve
-
-# Kiểm tra model đã pull chưa
-ollama list
-# Nếu chưa có: ollama pull qwen2.5:3b
-```
-
-**Lỗi: `'ollama' is not recognized`**
-
-Restart máy tính sau khi cài Ollama, hoặc thêm thủ công vào PATH:
-`C:\Users\<tên_user>\AppData\Local\Programs\Ollama`
-
-**Lỗi: Import module**
 ```bash
-# Đảm bảo chạy từ thư mục gốc
-cd rag-chatbot-sgu
-streamlit run app.py
+ollama serve
+ollama list
 ```
 
----
+## 10. Thu vien su dung
 
-## 📚 Tài Liệu Tham Khảo Cookbook
+Tu `requirements.txt`:
+- `langchain`
+- `langchain-community`
+- `langchain-google-genai`
+- `langchain-groq`
+- `langchain-ollama`
+- `langchain-chroma`
+- `google-genai`
+- `chromadb`
+- `streamlit`
+- `pypdf`
+- `docx2txt`
+- `Pillow`
+- `requests`
+- `python-dotenv`
 
-| Kỹ thuật | Notebook nguồn |
-|---------|---------------|
-| File API (Video/Audio) | `gemini-api/cookbook/video_understanding.ipynb` |
-| JSON Mode | `gemini-api/cookbook/json_mode.ipynb` |
-| Embeddings & RAG | `gemini-api/cookbook/embeddings/` |
-| System Instructions | `gemini-api/cookbook/system_instructions.ipynb` |
+## 11. Ghi chu
 
-Nguồn: https://github.com/google-gemini/cookbook
-
----
-
-*Đồ án sử dụng dữ liệu: Sổ tay Hỗ trợ Sinh viên SGU 2022 + Học phí 2025–2026*
+- Du lieu demo hien tai: `cam_nang_sinh_vien_v2.pdf`
+- README nay mo ta dung theo trang thai code hien tai cua repo
+- Neu bao cao do an, nen nhan manh:
+  - RAG
+  - Citation
+  - Visual Reasoning
+  - Gemini File API
+  - Structured Output
+  - Token Management / Cost Optimization

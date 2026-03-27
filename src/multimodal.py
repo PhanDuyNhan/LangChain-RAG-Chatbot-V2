@@ -31,13 +31,24 @@ from google.genai import types
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from quota_guard import get_vision_cache, get_vision_limiter, get_counter, with_retry
+    from quota_guard import (
+        get_vision_cache,
+        get_vision_limiter,
+        get_counter,
+        get_daily_tracker,
+        with_retry,
+        GEMINI_TEXT_MODEL,
+        GEMINI_VISION_RPD_SOFT,
+    )
     _vision_cache   = get_vision_cache()
     _vision_limiter = get_vision_limiter()
     _counter        = get_counter()
+    _daily_tracker  = get_daily_tracker()
     _with_retry     = with_retry
 except ImportError:
-    _vision_cache = _vision_limiter = _counter = None
+    _vision_cache = _vision_limiter = _counter = _daily_tracker = None
+    GEMINI_TEXT_MODEL = "gemini-2.5-flash"
+    GEMINI_VISION_RPD_SOFT = 18
     def _with_retry(max_retries=3, base_delay=2.0):
         def decorator(func): return func
         return decorator
@@ -60,7 +71,10 @@ Hướng dẫn theo loại tài liệu:
 - LICH THI: Liệt kê môn, ngày giờ, phòng. Suy luận: môn nào thi sớm nhất, có trùng lịch không?
 - THONG BAO: Tóm tắt nội dung chính, deadline, ai cần làm gì.
 
-YÊU CẦU: Trả về JSON thuần túy (không markdown, không ```json):
+YÊU CẦU:
+- Trả lời NGẮN GỌN, ưu tiên đúng trọng tâm câu hỏi người dùng.
+- Với lịch thi/bảng điểm dài, chỉ nêu tối đa 5 dòng quan trọng nhất.
+- Trả về JSON thuần túy (không markdown, không ```json):
 {"image_type":"loai tai lieu","extracted_data":{"key":"value"},"reasoning":"suy luan logic va nhan xet","answer":"tra loi cau hoi nguoi dung","recommendations":["goi y 1","goi y 2"],"confidence":"high/medium/low"}"""
 
 VIDEO_SYSTEM_PROMPT = """Bạn là trợ lý phân tích nội dung đa phương thức cho sinh viên SGU.
@@ -73,8 +87,84 @@ Yêu cầu phân tích:
 - Thời điểm quan trọng (nếu là video)
 - Người tham gia và vai trò (nếu là cuộc họp)
 
-Trả về JSON thuần túy:
+Trả về JSON thuần túy, ngắn gọn:
 {"content_type":"loai noi dung","summary":["diem 1","diem 2"],"action_items":[{"task":"viec lam","assignee":"nguoi thuc hien","deadline":"han chot"}],"key_moments":["thoi diem quan trong"],"answer":"tra loi cau hoi","confidence":"high/medium/low"}"""
+
+
+def _strip_markdown_json(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text).strip()
+    return text
+
+
+def _extract_balanced_json(text: str) -> str:
+    start = text.find("{")
+    if start == -1:
+        return ""
+
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:idx + 1]
+    return ""
+
+
+def _extract_json_fragment(text: str):
+    cleaned = _strip_markdown_json(text)
+    decoder = json.JSONDecoder()
+    for candidate in [cleaned, _extract_balanced_json(cleaned)]:
+        if not candidate:
+            continue
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+        if "{" in candidate:
+            try:
+                obj, _ = decoder.raw_decode(candidate[candidate.find("{"):])
+                if isinstance(obj, dict):
+                    return obj
+            except Exception:
+                pass
+    return None
+
+
+def _extract_string_field(text: str, key: str) -> str:
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"', text, re.DOTALL)
+    if not match:
+        return ""
+    return bytes(match.group(1), "utf-8").decode("unicode_escape").strip()
+
+
+def _extract_array_of_strings(text: str, key: str) -> list:
+    match = re.search(rf'"{re.escape(key)}"\s*:\s*\[(.*?)\]', text, re.DOTALL)
+    if not match:
+        return []
+    inner = match.group(1)
+    return [
+        bytes(item, "utf-8").decode("unicode_escape").strip()
+        for item in re.findall(r'"((?:\\.|[^"\\])*)"', inner)
+        if item.strip()
+    ]
 
 
 # =============================================================
@@ -143,7 +233,7 @@ def analyze_image(image_bytes: bytes, question: str) -> Dict[str, Any]:
         @_with_retry(max_retries=3, base_delay=2.0)
         def _call():
             return client.models.generate_content(
-                model="gemini-2.0-flash",
+                model=GEMINI_TEXT_MODEL,
                 contents=[
                     types.Content(
                         role="user",
@@ -160,6 +250,12 @@ def analyze_image(image_bytes: bytes, question: str) -> Dict[str, Any]:
                 ),
             )
 
+        if _daily_tracker and not _daily_tracker.can_consume("gemini_vision", GEMINI_VISION_RPD_SOFT):
+            return _error_response(
+                "quota",
+                "Đã chạm soft cap Gemini trong ngày để tránh hết quota free. Hãy thử lại vào ngày mới hoặc dùng fallback."
+            )
+
         if _vision_limiter:
             with _vision_limiter:
                 response = _call()
@@ -168,6 +264,8 @@ def analyze_image(image_bytes: bytes, question: str) -> Dict[str, Any]:
 
         if _counter:
             _counter.increment("gemini_vision")
+        if _daily_tracker:
+            _daily_tracker.increment("gemini_vision")
 
         result               = _parse_image_response(response.text)
         result["from_cache"] = False
@@ -212,13 +310,23 @@ def analyze_media_file(
     client        = _get_client()
     uploaded_file = None
     tmp_path      = None
+    file_hash     = hashlib.md5(file_bytes).hexdigest()
+
+    if _vision_cache:
+        cached = _vision_cache.get("media", file_hash, question)
+        if cached:
+            if _counter:
+                _counter.increment("cache_hits")
+            result = dict(cached)
+            result["from_cache"] = True
+            return result
 
     try:
         import tempfile
 
         # ── Bước 1: Lưu tạm + Upload ──
         with tempfile.NamedTemporaryFile(
-            delete=False, suffix=f"_{filename}", dir="/tmp"
+            delete=False, suffix=f"_{filename}"
         ) as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
@@ -262,7 +370,7 @@ def analyze_media_file(
         @_with_retry(max_retries=2, base_delay=3.0)
         def _call():
             return client.models.generate_content(
-                model="gemini-2.0-flash",
+                model=GEMINI_TEXT_MODEL,
                 contents=[
                     types.Content(
                         role="user",
@@ -282,11 +390,28 @@ def analyze_media_file(
                 ),
             )
 
-        response = _call()
+        if _daily_tracker and not _daily_tracker.can_consume("gemini_vision", GEMINI_VISION_RPD_SOFT):
+            return _error_response(
+                "quota",
+                "Đã chạm soft cap Gemini trong ngày để tránh hết quota free. Hãy thử lại vào ngày mới hoặc dùng fallback."
+            )
+
+        if _vision_limiter:
+            with _vision_limiter:
+                response = _call()
+        else:
+            response = _call()
+
         if _counter:
             _counter.increment("gemini_vision")
+        if _daily_tracker:
+            _daily_tracker.increment("gemini_vision")
 
-        return _parse_media_response(response.text)
+        result = _parse_media_response(response.text)
+        result["from_cache"] = False
+        if _vision_cache:
+            _vision_cache.set(result, "media", file_hash, question)
+        return result
 
     except Exception as e:
         err = str(e)
@@ -313,10 +438,9 @@ def analyze_media_file(
 # HELPERS
 # =============================================================
 def _parse_image_response(raw: str) -> dict:
-    text = re.sub(r"^```(?:json)?\s*", "", raw.strip())
-    text = re.sub(r"\s*```$", "", text).strip()
-    try:
-        data = json.loads(text)
+    text = _strip_markdown_json(raw)
+    data = _extract_json_fragment(text)
+    if isinstance(data, dict):
         return {
             "image_type":      data.get("image_type",      "không xác định"),
             "extracted_data":  data.get("extracted_data",  {}),
@@ -325,19 +449,34 @@ def _parse_image_response(raw: str) -> dict:
             "recommendations": data.get("recommendations", []),
             "confidence":      data.get("confidence",      "low"),
         }
-    except json.JSONDecodeError:
+
+    answer = _extract_string_field(text, "answer")
+    reasoning = _extract_string_field(text, "reasoning")
+    image_type = _extract_string_field(text, "image_type")
+    confidence = _extract_string_field(text, "confidence")
+    recommendations = _extract_array_of_strings(text, "recommendations")
+
+    if answer or image_type:
         return {
-            "image_type": "không xác định", "extracted_data": {},
-            "reasoning": "", "answer": raw,
-            "recommendations": ["Kết quả không phải JSON chuẩn"], "confidence": "low",
+            "image_type": image_type or "không xác định",
+            "extracted_data": {},
+            "reasoning": reasoning,
+            "answer": answer or "Đã nhận diện được một phần nội dung nhưng JSON chưa hoàn chỉnh.",
+            "recommendations": recommendations or ["Gemini trả JSON chưa hoàn chỉnh, nên xem lại câu trả lời tóm tắt."],
+            "confidence": confidence or "medium",
         }
+
+    return {
+        "image_type": "không xác định", "extracted_data": {},
+        "reasoning": "", "answer": raw,
+        "recommendations": ["Kết quả không phải JSON chuẩn"], "confidence": "low",
+    }
 
 
 def _parse_media_response(raw: str) -> dict:
-    text = re.sub(r"^```(?:json)?\s*", "", raw.strip())
-    text = re.sub(r"\s*```$", "", text).strip()
-    try:
-        data = json.loads(text)
+    text = _strip_markdown_json(raw)
+    data = _extract_json_fragment(text)
+    if isinstance(data, dict):
         return {
             "content_type": data.get("content_type", "không xác định"),
             "summary":      data.get("summary",      []),
@@ -346,11 +485,26 @@ def _parse_media_response(raw: str) -> dict:
             "answer":       data.get("answer",       "Không thể phân tích."),
             "confidence":   data.get("confidence",   "low"),
         }
-    except json.JSONDecodeError:
+
+    answer = _extract_string_field(text, "answer")
+    content_type = _extract_string_field(text, "content_type")
+    confidence = _extract_string_field(text, "confidence")
+    summary = _extract_array_of_strings(text, "summary")
+    key_moments = _extract_array_of_strings(text, "key_moments")
+    if answer or summary:
         return {
-            "content_type": "không xác định", "summary": [raw],
-            "action_items": [], "key_moments": [], "answer": raw, "confidence": "low",
+            "content_type": content_type or "không xác định",
+            "summary": summary,
+            "action_items": [],
+            "key_moments": key_moments,
+            "answer": answer or "Đã trích được một phần nội dung nhưng JSON chưa hoàn chỉnh.",
+            "confidence": confidence or "medium",
         }
+
+    return {
+        "content_type": "không xác định", "summary": [raw],
+        "action_items": [], "key_moments": [], "answer": raw, "confidence": "low",
+    }
 
 
 def _error_response(error_type: str, message: str) -> dict:

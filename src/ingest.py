@@ -33,13 +33,21 @@ from langchain_chroma import Chroma
 # Import quota_guard từ thư mục gốc
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from quota_guard import get_embed_limiter, with_retry, get_counter
+    from quota_guard import (
+        get_embed_limiter,
+        with_retry,
+        get_counter,
+        get_daily_tracker,
+        GEMINI_EMBED_RPD_SOFT,
+    )
     _embed_limiter = get_embed_limiter()
     _counter       = get_counter()
+    _daily_tracker = get_daily_tracker()
     _with_retry    = with_retry
 except ImportError:
     _embed_limiter = None
     _counter       = None
+    _daily_tracker = None
     def _with_retry(max_retries=3, base_delay=2.0):
         def decorator(func): return func
         return decorator
@@ -238,6 +246,12 @@ class GeminiEmbeddings(Embeddings):
         # Throttle trước khi gọi
         self._throttle()
 
+        if _daily_tracker and not _daily_tracker.can_consume("gemini_embed", GEMINI_EMBED_RPD_SOFT):
+            raise RuntimeError(
+                "Đã chạm soft cap embedding Gemini trong ngày. "
+                "Hãy tái sử dụng ChromaDB hiện có hoặc chờ quota ngày mới."
+            )
+
         if _embed_limiter:
             with _embed_limiter:
                 result = _call()
@@ -246,6 +260,8 @@ class GeminiEmbeddings(Embeddings):
 
         if _counter:
             _counter.increment("gemini_embed")
+        if _daily_tracker:
+            _daily_tracker.increment("gemini_embed")
 
         return result
 

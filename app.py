@@ -57,6 +57,10 @@ st.markdown("""
     .reasoning-box {
         background-color: #fff3cd; border-left: 4px solid #ffc107;
         padding: 12px; border-radius: 5px; margin: 8px 0;
+        color: #2b2111;
+    }
+    .reasoning-box b {
+        color: #2b2111;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -98,13 +102,15 @@ def render_sidebar():
         gemini_key = os.getenv("GOOGLE_API_KEY", "")
         groq_key   = os.getenv("GROQ_API_KEY", "")
 
-        st.success("✅ Gemini API Key: Có") if (
-            gemini_key and gemini_key != "your_gemini_api_key_here"
-        ) else st.warning("⚠️ Gemini API Key: Chưa cài")
+        if gemini_key and gemini_key != "your_gemini_api_key_here":
+            st.success("✅ Gemini API Key: Có")
+        else:
+            st.warning("⚠️ Gemini API Key: Chưa cài")
 
-        st.success("✅ Groq API Key: Có") if (
-            groq_key and groq_key != "your_groq_api_key_here"
-        ) else st.warning("⚠️ Groq API Key: Chưa cài")
+        if groq_key and groq_key != "your_groq_api_key_here":
+            st.success("✅ Groq API Key: Có")
+        else:
+            st.warning("⚠️ Groq API Key: Chưa cài")
 
         st.divider()
 
@@ -129,16 +135,32 @@ def render_sidebar():
         # ── Quota Usage Dashboard ──
         st.markdown("### 📈 Quota Usage (session này)")
         try:
-            from quota_guard import get_counter, get_llm_limiter
+            from quota_guard import (
+                get_counter,
+                get_llm_limiter,
+                get_daily_tracker,
+                GEMINI_LLM_RPD_SOFT,
+                GEMINI_EMBED_RPD_SOFT,
+                GEMINI_VISION_RPD_SOFT,
+                GEMINI_TEXT_MODEL,
+            )
             counter = get_counter()
             counts  = counter.get_all()
+            daily   = get_daily_tracker()
 
             # Gemini LLM
             used_llm  = counts.get("gemini_llm", 0)
-            pct_llm   = min(100, int(used_llm / 1500 * 100))
+            pct_llm   = min(100, int(used_llm / max(1, GEMINI_LLM_RPD_SOFT) * 100))
             bar_color = "🟢" if pct_llm < 50 else ("🟡" if pct_llm < 80 else "🔴")
-            st.markdown(f"{bar_color} **Gemini LLM**: {used_llm} / 1500 req/ngày")
+            st.markdown(f"{bar_color} **Gemini {GEMINI_TEXT_MODEL}**: {used_llm} / {GEMINI_LLM_RPD_SOFT} req/ngày (session)")
             st.progress(pct_llm / 100)
+            st.caption(f"Hôm nay đã dùng toàn app: {daily.get('gemini_llm')} / {GEMINI_LLM_RPD_SOFT}")
+
+            # Embedding
+            used_embed = counts.get("gemini_embed", 0)
+            pct_embed  = min(100, int(used_embed / max(1, GEMINI_EMBED_RPD_SOFT) * 100))
+            st.markdown(f"🟢 **Gemini Embedding**: {used_embed} / {GEMINI_EMBED_RPD_SOFT} req/ngày (session)")
+            st.progress(pct_embed / 100)
 
             # Groq
             used_groq = counts.get("groq", 0)
@@ -148,8 +170,9 @@ def render_sidebar():
 
             # Vision
             used_vis  = counts.get("gemini_vision", 0)
-            if used_vis > 0:
-                st.markdown(f"🟢 **Gemini Vision**: {used_vis} req")
+            pct_vis   = min(100, int(used_vis / max(1, GEMINI_VISION_RPD_SOFT) * 100))
+            st.markdown(f"🟢 **Gemini Vision/File API**: {used_vis} / {GEMINI_VISION_RPD_SOFT} req/ngày (session)")
+            st.progress(pct_vis / 100)
 
             # Cache hits
             hits = counts.get("cache_hits", 0)
@@ -159,8 +182,9 @@ def render_sidebar():
             # RPM hiện tại
             limiter   = get_llm_limiter()
             rpm_now   = limiter.requests_this_minute
-            rpm_color = "🟢" if rpm_now < 7 else ("🟡" if rpm_now < 9 else "🔴")
-            st.caption(f"{rpm_color} Gemini RPM: {rpm_now}/10 phút này")
+            rpm_limit = limiter.rpm
+            rpm_color = "🟢" if rpm_now < max(1, rpm_limit - 2) else ("🟡" if rpm_now < rpm_limit else "🔴")
+            st.caption(f"{rpm_color} Gemini RPM: {rpm_now}/{rpm_limit} trong 60 giây gần nhất")
 
         except ImportError:
             st.caption("quota_guard.py chưa được cài")
@@ -218,7 +242,7 @@ def render_tab_chat():
             question   = sample
             search_btn = True
 
-    if (search_btn or question) and question.strip():
+    if search_btn and question.strip():
         with st.spinner("🔍 Đang tìm kiếm..."):
             try:
                 rag      = load_rag_chain()
@@ -267,7 +291,7 @@ def _render_rag_response(response: dict):
     if related:
         st.markdown("**🔗 Chủ đề liên quan:** " + " • ".join(f"`{t}`" for t in related))
 
-    with st.expander("📋 Xem JSON Response (Structured Output)"):
+    with st.expander("📋 Structured Output JSON (dùng cho UI / lưu trữ)"):
         st.json({k: v for k, v in response.items() if k != "retrieved_docs"})
 
     retrieved = response.get("retrieved_docs", [])
@@ -401,7 +425,8 @@ def _render_image_result(result: dict):
         conf_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(confidence, "⚪")
         st.markdown(f"{conf_emoji} **Độ tin cậy:** {confidence.upper()}")
     with col2:
-        st.markdown('<span class="provider-badge">🤖 Gemini 2.0 Flash Vision</span>', unsafe_allow_html=True)
+        from quota_guard import GEMINI_TEXT_MODEL
+        st.markdown(f'<span class="provider-badge">🤖 {GEMINI_TEXT_MODEL} Vision</span>', unsafe_allow_html=True)
 
     with st.expander("📋 Xem JSON Response (Structured Output)"):
         st.json(result)
@@ -480,6 +505,10 @@ def _render_media_analysis():
 def _render_media_result(result: dict):
     st.markdown("---")
     st.markdown("### 📋 Kết quả Phân tích")
+
+    if result.get("from_cache"):
+        st.markdown('<span class="cache-badge">⚡ Từ cache — 0 token</span>', unsafe_allow_html=True)
+        st.markdown("")
     st.info(f"🎬 **Loại nội dung:** {result.get('content_type', 'không xác định')}")
 
     if result.get("answer"):
@@ -516,7 +545,8 @@ def _render_media_result(result: dict):
     with col1:
         st.markdown(f"{conf_emoji} **Độ tin cậy:** {confidence.upper()}")
     with col2:
-        st.markdown('<span class="provider-badge">🤖 Gemini File API</span>', unsafe_allow_html=True)
+        from quota_guard import GEMINI_TEXT_MODEL
+        st.markdown(f'<span class="provider-badge">🤖 {GEMINI_TEXT_MODEL} File API</span>', unsafe_allow_html=True)
 
     with st.expander("📋 Xem JSON Response (Structured Output)"):
         st.json(result)
