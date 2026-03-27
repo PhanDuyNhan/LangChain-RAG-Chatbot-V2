@@ -1,45 +1,29 @@
-# =============================================================
-# REQUIREMENTS - RAG Chatbot SGU (Mức 1 + Mức 2)
-# Tất cả thư viện đều MIỄN PHÍ
-#
-# Cài đặt: pip install -r requirements.txt
-#
-# Lưu ý: google-generativeai được cài qua langchain-google-genai
-# KHÔNG cài riêng để tránh conflict version.
-# =============================================================
-
 # --- LangChain core ---
 langchain==0.3.25
 langchain-community==0.3.23
 
 # --- LangChain integrations ---
-langchain-google-genai==2.1.4       # Gemini LLM + Embeddings qua LangChain
-langchain-groq==0.3.2               # Groq LLM backup
-langchain-ollama==0.3.3             # Ollama LLM backup (local)
-langchain-chroma==0.2.4             # ChromaDB integration
+langchain-google-genai==2.1.4
+langchain-groq==0.3.2
+langchain-ollama==0.3.3
+langchain-chroma==0.2.4
 
 # --- Vector Database ---
-chromadb>=1.0.9                     # Vector DB lưu local (không cần server)
+chromadb>=1.0.9
 
-# --- Google Generative AI SDK ---
-# Dùng trực tiếp cho Mức 2: File API (video/audio), Vision (ảnh)
-# langchain-google-genai đã kéo về google-ai-generativelanguage
-# Cài thêm google-generativeai để dùng genai.upload_file(), genai.GenerativeModel()
-google-generativeai>=0.8.0
-
-# --- Đọc file tài liệu ---
-pypdf==5.4.0                        # Đọc PDF (Mức 1 - ingest)
-pdfplumber==0.11.6                  # Đọc PDF nâng cao (bảng, layout)
-docx2txt==0.8                       # Đọc DOCX (Mức 1 - ingest)
+# --- Đọc file ---
+pypdf==5.4.0
+pdfplumber==0.11.6
+docx2txt==0.8
 
 # --- UI ---
-streamlit==1.45.1                   # Web UI
+streamlit==1.45.1
 
-# --- Xử lý ảnh (Mức 2 - Visual Reasoning) ---
-Pillow==11.2.1                      # Validate, resize ảnh trước khi gửi Gemini
+# --- Image ---
+Pillow==11.2.1
 
-# --- HTTP requests ---
-requests>=2.31.0                    # Gọi Gemini Embedding REST API trực tiếp
+# --- HTTP ---
+requests>=2.31.0
 
-# --- Tiện ích ---
-python-dotenv==1.1.0                # Đọc file .env
+# --- Utils ---
+python-dotenv==1.1.0
