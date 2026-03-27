@@ -1,48 +1,50 @@
 # =============================================================
-# multimodal.py - PHÂN TÍCH ĐA PHƯƠNG THỨC VỚI GEMINI (LEVEL 2)
+# src/multimodal.py - PHÂN TÍCH ĐA PHƯƠNG THỨC (MỨC 2)
 # =============================================================
-# Mức 2 yêu cầu:
-#   1. Visual Reasoning: Suy luận logic từ ảnh (không chỉ nhận diện)
-#   2. Gemini File API: Upload file lớn (video/audio) lên server Google
-#   3. Structured Extraction: Trích xuất thông tin ra JSON chuẩn
+# Kỹ thuật Mức 2:
+#   1. Visual Reasoning  : Suy luận logic từ ảnh (không chỉ nhận diện)
+#   2. Gemini File API   : Upload video/audio lên server Google
+#   3. Structured Output : Tất cả kết quả trả về JSON chuẩn
 #
-# Use cases trong bối cảnh SGU:
-#   - Ảnh: Phân tích hóa đơn học phí, bảng điểm, lịch thi, thông báo
-#   - Video/Audio: Tóm tắt nội dung buổi học, cuộc họp
-#
-# Lý do dùng Gemini File API thay vì base64:
-#   - File lớn (video, audio) không thể gửi qua base64 → tốn băng thông
-#   - File API upload 1 lần, dùng nhiều lần → tiết kiệm token
-#   - Google lưu file 48 giờ trên server → không cần re-upload
-#
-# Structured Output: Tất cả trả về JSON chuẩn
+# Tối ưu quota tích hợp:
+#   - VisionCache        : cùng ảnh + cùng câu hỏi = 0 token
+#   - RateLimiter 14 RPM : không vượt quota Vision (dùng chung LLM quota)
+#   - Retry backoff      : tự phục hồi khi 429 tạm thời
 # =============================================================
 
-import os        # Đọc biến môi trường
-import base64    # Encode ảnh nhỏ thành base64
-import json      # Parse JSON response
-import re        # Regex xóa markdown
-import time      # Chờ file processing
+import os
+import sys
+import base64
+import json
+import re
+import time
+import hashlib
 from typing import Dict, Any
 from dotenv import load_dotenv
-from PIL import Image   # Xử lý ảnh: validate, resize
-import io               # BytesIO
+from PIL import Image
+import io
 
-# Dùng google-genai SDK mới (thay thế google-generativeai đã deprecated)
-# Hỗ trợ File API, không conflict với langchain-google-genai
 import google.generativeai as genai
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    from quota_guard import get_vision_cache, get_vision_limiter, get_counter, with_retry
+    _vision_cache   = get_vision_cache()
+    _vision_limiter = get_vision_limiter()
+    _counter        = get_counter()
+    _with_retry     = with_retry
+except ImportError:
+    _vision_cache = _vision_limiter = _counter = None
+    def _with_retry(max_retries=3, base_delay=2.0):
+        def decorator(func): return func
+        return decorator
 
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 
+
 # =============================================================
-# SYSTEM PROMPT - VISUAL REASONING (Mức 2)
-# =============================================================
-# Lý do thiết kế prompt này:
-# - Yêu cầu AI KHÔNG chỉ nhận diện vật thể mà phải SUY LUẬN LOGIC
-# - Ví dụ: không nói "đây là bảng điểm" mà phải phân tích "môn nào cần cải thiện"
-# - Buộc trả về JSON để code xử lý tiếp (Structured Output)
-# - Phân biệt các loại tài liệu SGU để extract đúng thông tin
+# SYSTEM PROMPTS
 # =============================================================
 IMAGE_SYSTEM_PROMPT = """Bạn là trợ lý thông minh hỗ trợ sinh viên Trường Đại học Sài Gòn (SGU).
 
@@ -73,178 +75,158 @@ Trả về JSON thuần túy:
 
 
 # =============================================================
-# HÀM PHÂN TÍCH ẢNH (Visual Reasoning)
+# PHÂN TÍCH ẢNH (Visual Reasoning)
 # =============================================================
 def analyze_image(image_bytes: bytes, question: str) -> Dict[str, Any]:
     """
-    Phân tích ảnh với Visual Reasoning — suy luận logic, không chỉ nhận diện.
+    Phân tích ảnh với Visual Reasoning + cache + rate limit.
 
-    Kỹ thuật Mức 2:
-    - Visual Reasoning: AI suy luận từ ảnh (GPA có đủ học bổng không? Lịch thi có trùng không?)
-    - Structured Extraction: Trích xuất ra JSON chuẩn
-    - Dùng base64 cho ảnh nhỏ (< 20MB) — phù hợp với ảnh chụp tài liệu
-
-    Args:
-        image_bytes: Dữ liệu ảnh dạng bytes
-        question:    Câu hỏi của sinh viên
-
-    Returns:
-        Dict JSON: image_type, extracted_data, reasoning, answer, recommendations, confidence
+    Cache key = MD5(image_bytes) + question
+    → Cùng ảnh + cùng câu hỏi → trả ngay kết quả cũ (0 token)
+    → Cùng ảnh + câu hỏi khác → gọi API mới
     """
+    # ── Cache check ──
+    if _vision_cache:
+        img_hash = hashlib.md5(image_bytes).hexdigest()
+        cached   = _vision_cache.get(img_hash, question)
+        if cached:
+            if _counter:
+                _counter.increment("cache_hits")
+            result = dict(cached)
+            result["from_cache"] = True
+            return result
+
     if not GOOGLE_API_KEY or GOOGLE_API_KEY == "your_gemini_api_key_here":
         raise ValueError("Thiếu GOOGLE_API_KEY trong file .env")
 
-    # --- Bước 1: Cấu hình SDK và validate ảnh ---
     genai.configure(api_key=GOOGLE_API_KEY)
 
+    # ── Resize ảnh → tiết kiệm token ──
     try:
         pil_image = Image.open(io.BytesIO(image_bytes))
+        if pil_image.size[0] > 1024 or pil_image.size[1] > 1024:
+            pil_image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
 
-        # Resize nếu quá lớn → tiết kiệm token (Token Management)
-        # Gemini vẫn đọc rõ ảnh 1024px, không cần gửi ảnh 4K
-        max_size = (1024, 1024)
-        if pil_image.size[0] > max_size[0] or pil_image.size[1] > max_size[1]:
-            pil_image.thumbnail(max_size, Image.Resampling.LANCZOS)
-
-        # Xác định format
         img_format = pil_image.format if pil_image.format else "JPEG"
         if img_format.upper() not in ["JPEG", "PNG", "WEBP"]:
             img_format = "JPEG"
 
-        # Ghi vào buffer
         buf = io.BytesIO()
         pil_image.save(buf, format=img_format)
         processed_bytes = buf.getvalue()
-
     except Exception as e:
         return _error_response("image", f"Không đọc được ảnh: {str(e)}")
 
-    # --- Bước 2: Gọi Gemini với Visual Reasoning prompt ---
+    # ── Gọi Gemini Vision ──
     try:
         model = genai.GenerativeModel(
             model_name="gemini-2.0-flash",
-            # System instruction định danh vai trò AI (yêu cầu báo cáo)
             system_instruction=IMAGE_SYSTEM_PROMPT,
         )
-
-        # Tạo prompt kết hợp câu hỏi + ảnh base64
         prompt_parts = [
             f"Câu hỏi của sinh viên: {question}\n\nHãy phân tích ảnh sau và trả lời:",
-            {
-                "mime_type": f"image/{img_format.lower()}",
-                "data": base64.b64encode(processed_bytes).decode("utf-8"),
-            }
+            {"mime_type": f"image/{img_format.lower()}", "data": base64.b64encode(processed_bytes).decode("utf-8")},
         ]
+        gen_config = genai.GenerationConfig(temperature=0.1, max_output_tokens=1024)
 
-        response = model.generate_content(
-            prompt_parts,
-            generation_config=genai.GenerationConfig(
-                temperature=0.1,        # Nhất quán, ít sáng tạo → phù hợp phân tích
-                max_output_tokens=1024, # Giới hạn output (Token Management)
-            )
-        )
+        @_with_retry(max_retries=3, base_delay=2.0)
+        def _call():
+            return model.generate_content(prompt_parts, generation_config=gen_config)
 
-        return _parse_image_response(response.text)
+        if _vision_limiter:
+            with _vision_limiter:
+                response = _call()
+        else:
+            response = _call()
+
+        if _counter:
+            _counter.increment("gemini_vision")
+
+        result               = _parse_image_response(response.text)
+        result["from_cache"] = False
+
+        # ── Lưu cache ──
+        if _vision_cache:
+            img_hash = hashlib.md5(image_bytes).hexdigest()
+            _vision_cache.set(result, img_hash, question)
+
+        return result
 
     except Exception as e:
         err = str(e)
         if "429" in err or "quota" in err.lower():
-            return _error_response("quota", "Hết quota Gemini (1500 req/ngày). Reset lúc 07:00 VN.")
+            return _error_response("quota",
+                "Hết quota Gemini Vision. Chờ 1 phút rồi thử lại (reset lúc 07:00 VN).")
         return _error_response("api", f"Lỗi Gemini API: {err[:200]}")
 
 
 # =============================================================
-# HÀM PHÂN TÍCH VIDEO/AUDIO (Gemini File API)
+# PHÂN TÍCH VIDEO/AUDIO (Gemini File API)
 # =============================================================
 def analyze_media_file(file_bytes: bytes, filename: str, question: str, mime_type: str) -> Dict[str, Any]:
     """
-    Phân tích video/audio dùng Gemini File API.
+    Phân tích video/audio với Gemini File API.
 
-    Tại sao dùng File API thay vì base64 (Mức 2 yêu cầu):
-    - File lớn (30MB video) không thể gửi qua base64 → gây lỗi hoặc tốn băng thông cực lớn
-    - File API: Upload 1 lần lên Google server → Gemini đọc trực tiếp từ server
-    - Google lưu file 48 giờ → có thể dùng lại nhiều lần mà không cần upload lại
-    - Tiết kiệm token vì không cần encode base64 trong payload
+    Tại sao dùng File API (Mức 2 yêu cầu):
+      - File lớn không thể gửi qua base64 → tốn băng thông
+      - File API: upload 1 lần, Google lưu 48h → gọi Gemini với URI
+      - Tiết kiệm token vì không encode base64 trong payload
 
-    Quy trình File API:
-      1. Upload file → nhận file_uri
-      2. Chờ Google xử lý file (PROCESSING → ACTIVE)
-      3. Gọi Gemini với file_uri thay vì base64
-      4. Nhận kết quả JSON
-
-    Args:
-        file_bytes: Dữ liệu file dạng bytes
-        filename:   Tên file gốc
-        question:   Câu hỏi của người dùng
-        mime_type:  MIME type (video/mp4, audio/mpeg, v.v.)
-
-    Returns:
-        Dict JSON: content_type, summary, action_items, key_moments, answer, confidence
+    Quy trình:
+      1. Upload → nhận file_uri
+      2. Chờ PROCESSING → ACTIVE
+      3. Gọi Gemini với file URI
+      4. Xóa file sau khi dùng xong
     """
     if not GOOGLE_API_KEY or GOOGLE_API_KEY == "your_gemini_api_key_here":
         raise ValueError("Thiếu GOOGLE_API_KEY trong file .env")
 
     genai.configure(api_key=GOOGLE_API_KEY)
 
-    # --- Bước 1: Upload file lên Google File API ---
-    # File API nhận file dưới dạng stream, không cần convert
     import tempfile
-    import os
-
     uploaded_file = None
+    tmp_path      = None
+
     try:
-        # Lưu tạm ra disk để upload (File API cần file path hoặc file object)
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=f"_{filename}",
-            dir="/tmp"
-        ) as tmp:
+        # ── Bước 1: Lưu tạm + Upload ──
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{filename}", dir="/tmp") as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
 
-        print(f"[File API] Đang upload {filename} ({len(file_bytes)/1024/1024:.1f} MB)...")
-
-        # Upload lên Google File API
-        uploaded_file = genai.upload_file(
-            path=tmp_path,
-            mime_type=mime_type,
-            display_name=filename,
-        )
-
+        print(f"[File API] Uploading {filename} ({len(file_bytes)/1024/1024:.1f} MB)...")
+        uploaded_file = genai.upload_file(path=tmp_path, mime_type=mime_type, display_name=filename)
         print(f"[File API] Upload xong: {uploaded_file.name}")
 
-        # --- Bước 2: Chờ Google xử lý file ---
-        # File cần thời gian để Google transcribe/process
-        # Trạng thái: PROCESSING → ACTIVE (sẵn sàng dùng)
-        max_wait = 60  # Chờ tối đa 60 giây
+        # ── Bước 2: Chờ ACTIVE ──
         waited = 0
-        while uploaded_file.state.name == "PROCESSING" and waited < max_wait:
+        while uploaded_file.state.name == "PROCESSING" and waited < 120:
             print(f"[File API] Đang xử lý... ({waited}s)")
             time.sleep(3)
-            waited += 3
-            # Refresh trạng thái file
+            waited       += 3
             uploaded_file = genai.get_file(uploaded_file.name)
 
         if uploaded_file.state.name != "ACTIVE":
             return _error_response("processing", f"File không xử lý được: {uploaded_file.state.name}")
 
-        print(f"[File API] File sẵn sàng: {uploaded_file.uri}")
+        print(f"[File API] Sẵn sàng: {uploaded_file.uri}")
 
-        # --- Bước 3: Gọi Gemini với file URI ---
-        model = genai.GenerativeModel(
+        # ── Bước 3: Gọi Gemini với file URI ──
+        model  = genai.GenerativeModel(
             model_name="gemini-2.0-flash",
             system_instruction="Bạn là trợ lý phân tích nội dung đa phương thức cho sinh viên SGU. Trả lời bằng tiếng Việt, ngắn gọn và hữu ích.",
         )
-
         prompt = VIDEO_SYSTEM_PROMPT.format(question=question)
 
-        response = model.generate_content(
-            [prompt, uploaded_file],  # Truyền file URI trực tiếp
-            generation_config=genai.GenerationConfig(
-                temperature=0.1,
-                max_output_tokens=2048,  # Video/audio cần output dài hơn
+        @_with_retry(max_retries=2, base_delay=3.0)
+        def _call():
+            return model.generate_content(
+                [prompt, uploaded_file],
+                generation_config=genai.GenerationConfig(temperature=0.1, max_output_tokens=2048),
             )
-        )
+
+        response = _call()
+        if _counter:
+            _counter.increment("gemini_vision")
 
         return _parse_media_response(response.text)
 
@@ -255,91 +237,73 @@ def analyze_media_file(file_bytes: bytes, filename: str, question: str, mime_typ
         return _error_response("api", f"Lỗi File API: {err[:200]}")
 
     finally:
-        # Dọn dẹp file tạm và xóa file khỏi Google server
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
+        # ── Bước 4: Dọn dẹp ──
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
         if uploaded_file:
             try:
-                # Xóa file khỏi Google server sau khi dùng xong
                 genai.delete_file(uploaded_file.name)
-                print(f"[File API] Đã xóa file khỏi server: {uploaded_file.name}")
+                print(f"[File API] Đã xóa: {uploaded_file.name}")
             except Exception:
-                pass  # Không quan trọng nếu xóa thất bại
+                pass
 
 
 # =============================================================
-# HELPER FUNCTIONS
+# HELPERS
 # =============================================================
-def _parse_image_response(raw_text: str) -> dict:
-    """Parse JSON response từ Gemini Vision."""
-    text = raw_text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-
+def _parse_image_response(raw: str) -> dict:
+    text = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    text = re.sub(r"\s*```$", "", text).strip()
     try:
         data = json.loads(text)
         return {
-            "image_type":      data.get("image_type", "không xác định"),
-            "extracted_data":  data.get("extracted_data", {}),
-            "reasoning":       data.get("reasoning", ""),
-            "answer":          data.get("answer", "Không thể phân tích."),
+            "image_type":      data.get("image_type",      "không xác định"),
+            "extracted_data":  data.get("extracted_data",  {}),
+            "reasoning":       data.get("reasoning",       ""),
+            "answer":          data.get("answer",          "Không thể phân tích."),
             "recommendations": data.get("recommendations", []),
-            "confidence":      data.get("confidence", "low"),
+            "confidence":      data.get("confidence",      "low"),
         }
     except json.JSONDecodeError:
         return {
-            "image_type":      "không xác định",
-            "extracted_data":  {},
-            "reasoning":       "",
-            "answer":          raw_text,
-            "recommendations": ["Kết quả không phải JSON chuẩn"],
-            "confidence":      "low",
+            "image_type": "không xác định", "extracted_data": {},
+            "reasoning": "", "answer": raw,
+            "recommendations": ["Kết quả không phải JSON chuẩn"], "confidence": "low",
         }
 
 
-def _parse_media_response(raw_text: str) -> dict:
-    """Parse JSON response từ Gemini sau khi phân tích video/audio."""
-    text = raw_text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-
+def _parse_media_response(raw: str) -> dict:
+    text = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    text = re.sub(r"\s*```$", "", text).strip()
     try:
         data = json.loads(text)
         return {
-            "content_type":  data.get("content_type", "không xác định"),
-            "summary":       data.get("summary", []),
-            "action_items":  data.get("action_items", []),
-            "key_moments":   data.get("key_moments", []),
-            "answer":        data.get("answer", "Không thể phân tích."),
-            "confidence":    data.get("confidence", "low"),
+            "content_type": data.get("content_type", "không xác định"),
+            "summary":      data.get("summary",      []),
+            "action_items": data.get("action_items", []),
+            "key_moments":  data.get("key_moments",  []),
+            "answer":       data.get("answer",       "Không thể phân tích."),
+            "confidence":   data.get("confidence",   "low"),
         }
     except json.JSONDecodeError:
         return {
-            "content_type":  "không xác định",
-            "summary":       [raw_text],
-            "action_items":  [],
-            "key_moments":   [],
-            "answer":        raw_text,
-            "confidence":    "low",
+            "content_type": "không xác định", "summary": [raw],
+            "action_items": [], "key_moments": [], "answer": raw, "confidence": "low",
         }
 
 
 def _error_response(error_type: str, message: str) -> dict:
-    """Tạo response lỗi có cấu trúc JSON chuẩn (không crash app)."""
     return {
-        "image_type":      f"lỗi_{error_type}",
-        "extracted_data":  {},
-        "reasoning":       "",
-        "answer":          message,
-        "recommendations": [],
-        "confidence":      "low",
+        "image_type": f"lỗi_{error_type}", "extracted_data": {},
+        "reasoning": "", "answer": message,
+        "recommendations": [], "confidence": "low",
     }
 
 
 def get_image_dimensions(image_bytes: bytes) -> tuple:
-    """Lấy kích thước ảnh để hiển thị trên UI."""
     try:
         img = Image.open(io.BytesIO(image_bytes))
         return img.size
@@ -348,9 +312,8 @@ def get_image_dimensions(image_bytes: bytes) -> tuple:
 
 
 def get_supported_media_types() -> dict:
-    """Trả về danh sách MIME type được hỗ trợ bởi Gemini File API."""
     return {
         "image": ["image/jpeg", "image/png", "image/webp", "image/gif"],
-        "video": ["video/mp4", "video/mpeg", "video/mov", "video/avi", "video/webm"],
-        "audio": ["audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg", "audio/m4a"],
+        "video": ["video/mp4",  "video/mpeg", "video/mov", "video/avi", "video/webm"],
+        "audio": ["audio/mpeg", "audio/mp3",  "audio/wav", "audio/ogg", "audio/m4a"],
     }
