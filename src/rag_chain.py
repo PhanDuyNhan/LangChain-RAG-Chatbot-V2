@@ -26,7 +26,8 @@ from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
 from langchain_chroma import Chroma
-from langchain.schema import Document, HumanMessage
+from langchain_core.documents import Document
+from langchain_core.messages import HumanMessage
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -234,7 +235,7 @@ def _normalize_rag_payload(data: dict, depth: int = 0) -> dict:
         "confidence": confidence,
         "related_topics": related_topics,
     }
-
+# 
 
 def _clean_answer_text(answer: str) -> str:
     text = (answer or "").strip()

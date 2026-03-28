@@ -25,7 +25,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 import requests
 from langchain.embeddings.base import Embeddings
 from langchain_chroma import Chroma
@@ -127,7 +127,7 @@ def split_documents(documents: list) -> list:
       • File thường (PDF thường):   RecursiveCharacterTextSplitter chunk_size=1000
     """
     import re
-    from langchain.schema import Document
+    from langchain_core.documents import Document
     from collections import defaultdict
 
     KB_FILE_JUNK = [
