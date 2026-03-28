@@ -409,6 +409,12 @@ def _render_rag_response(response: dict):
         st.markdown('<span class="cache-badge">⚡ Từ cache — 0 token</span>', unsafe_allow_html=True)
         st.markdown("")
 
+    response_mode = response.get("response_mode", "rag")
+    if response_mode == "general_fallback":
+        st.info("🌐 Câu hỏi này không khớp rõ với tài liệu SGU. Hệ thống đang trả lời bằng kiến thức chung.")
+    else:
+        st.caption("📚 Câu trả lời đang ưu tiên bám theo tài liệu SGU đã nạp.")
+
     answer = response.get("answer", "Không có câu trả lời").strip()
     st.markdown("**💬 Câu trả lời:**")
     st.markdown(answer)
@@ -427,6 +433,11 @@ def _render_rag_response(response: dict):
     with col3:
         st.markdown("🤖 **Provider:**")
         st.caption(response.get("provider", "Không xác định"))
+
+    relevance_score = response.get("relevance_score")
+    if relevance_score is not None:
+        mode_label = "ngoài tài liệu" if response_mode == "general_fallback" else "theo tài liệu"
+        st.caption(f"Điểm liên quan tài liệu: {relevance_score} • Chế độ: {mode_label}")
 
     related = response.get("related_topics", [])
     if related:
