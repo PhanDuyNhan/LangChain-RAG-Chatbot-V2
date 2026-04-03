@@ -90,13 +90,11 @@ Yêu cầu phân tích:
 Trả về JSON thuần túy, ngắn gọn:
 {"content_type":"loai noi dung","summary":["diem 1","diem 2"],"action_items":[{"task":"viec lam","assignee":"nguoi thuc hien","deadline":"han chot"}],"key_moments":["thoi diem quan trong"],"answer":"tra loi cau hoi","confidence":"high/medium/low"}"""
 
-
 def _strip_markdown_json(text: str) -> str:
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text).strip()
     return text
-
 
 def _extract_balanced_json(text: str) -> str:
     start = text.find("{")
