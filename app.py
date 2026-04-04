@@ -26,6 +26,7 @@ import streamlit as st
 import os
 import sys
 import re
+from html import escape as html_escape
 from pathlib import Path
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
@@ -491,6 +492,16 @@ def render_tab_multimodal():
 
 
 def _render_image_analysis():
+    suggestion_samples = [
+        "Tôi có đủ điều kiện học bổng không? Môn nào cần cải thiện?",
+        "Hóa đơn này hợp lệ không? Tôi đã đóng đủ học phí chưa?",
+        "Lịch thi này tôi cần chuẩn bị gì? Môn nào thi sớm nhất?",
+        "Thông báo này yêu cầu tôi làm gì và deadline là khi nào?",
+    ]
+    default_image_question = "Phân tích tài liệu này và đưa ra nhận xét, gợi ý hữu ích."
+    if "image_question_input" not in st.session_state:
+        st.session_state.image_question_input = default_image_question
+
     col1, col2 = st.columns([1, 1])
 
     with col1:
@@ -499,25 +510,10 @@ def _render_image_analysis():
             type=["jpg", "jpeg", "png", "webp"],
             help="Hỗ trợ JPG, PNG, WEBP. Tối đa 10MB.",
         )
-        image_question = st.text_area(
+        st.text_area(
             "❓ Câu hỏi / Yêu cầu phân tích:",
-            value="Phân tích tài liệu này và đưa ra nhận xét, gợi ý hữu ích.",
+            key="image_question_input",
             height=100,
-        )
-
-        st.markdown("**💡 Gợi ý câu hỏi Visual Reasoning:**")
-        for s in [
-            "Tôi có đủ điều kiện học bổng không? Môn nào cần cải thiện?",
-            "Hóa đơn này hợp lệ không? Tôi đã đóng đủ học phí chưa?",
-            "Lịch thi này tôi cần chuẩn bị gì? Môn nào thi sớm nhất?",
-            "Thông báo này yêu cầu tôi làm gì và deadline là khi nào?",
-        ]:
-            if st.button(f"💬 {s[:50]}...", key=f"img_s_{s[:15]}"):
-                image_question = s
-
-        analyze_btn = st.button(
-            "🔍 Phân tích ảnh (Visual Reasoning)",
-            type="primary", disabled=not uploaded_file, use_container_width=True,
         )
 
     with col2:
@@ -528,13 +524,26 @@ def _render_image_analysis():
             w, h = get_image_dimensions(image_bytes)
             st.caption(f"Kích thước: {w}×{h}px | {len(image_bytes)/1024:.1f}KB")
 
+    st.markdown("**💡 Gợi ý câu hỏi Visual Reasoning:**")
+    suggestion_cols = st.columns(2)
+    for idx, sample in enumerate(suggestion_samples):
+        with suggestion_cols[idx % 2]:
+            if st.button(f"💬 {sample[:50]}...", key=f"img_s_{idx}", use_container_width=True):
+                st.session_state.image_question_input = sample
+                st.rerun()
+
+    analyze_btn = st.button(
+        "🔍 Phân tích ảnh (Visual Reasoning)",
+        type="primary", disabled=not uploaded_file, use_container_width=True,
+    )
+
     if analyze_btn and uploaded_file:
         uploaded_file.seek(0)
         image_bytes = uploaded_file.read()
         with st.spinner("🔍 Gemini đang phân tích và suy luận từ ảnh..."):
             try:
                 from multimodal import analyze_image
-                result = analyze_image(image_bytes, image_question)
+                result = analyze_image(image_bytes, st.session_state.image_question_input)
                 _render_image_result(result)
             except Exception as e:
                 st.error(f"❌ Lỗi: {str(e)}")
@@ -549,6 +558,33 @@ def _render_image_result(result: dict):
         st.markdown("")
 
     st.info(f"📄 **Loại tài liệu nhận diện:** {result.get('image_type', 'không xác định')}")
+
+    highlights = result.get("highlights", [])
+    if highlights:
+        cols = st.columns(min(len(highlights), 4))
+        for idx, item in enumerate(highlights[:4]):
+            with cols[idx]:
+                label = html_escape(str(item.get("label", "")))
+                value = html_escape(str(item.get("value", "")))
+                st.markdown(
+                    f"""
+                    <div style="padding:10px 12px;border:1px solid rgba(255,255,255,0.12);
+                                border-radius:12px;background:rgba(255,255,255,0.03);min-height:88px;">
+                        <div style="font-size:0.78rem;color:rgba(255,255,255,0.62);margin-bottom:6px;">
+                            {label}
+                        </div>
+                        <div style="font-size:0.95rem;font-weight:700;line-height:1.35;">
+                            {value}
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    summary = result.get("structured_summary", {})
+    if summary.get("entries_count"):
+        st.caption(f"🔎 Đã trích xuất khoảng {summary['entries_count']} mục dữ liệu quan trọng từ ảnh.")
+
     st.markdown("**💬 Câu trả lời:**")
     st.markdown(result.get("answer", ""))
 
@@ -574,7 +610,8 @@ def _render_image_result(result: dict):
     with col1:
         confidence = result.get("confidence", "low")
         conf_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(confidence, "⚪")
-        st.markdown(f"{conf_emoji} **Độ tin cậy:** {confidence.upper()}")
+        conf_label = {"high": "HIGH", "medium": "MEDIUM", "low": "LOW"}.get(confidence, confidence.upper())
+        st.markdown(f"{conf_emoji} **Độ tin cậy:** {conf_label}")
     with col2:
         from quota_guard import GEMINI_TEXT_MODEL
         st.markdown(f'<span class="provider-badge">🤖 {GEMINI_TEXT_MODEL} Vision</span>', unsafe_allow_html=True)

@@ -1,9 +1,0 @@
-[server]
-# Tắt file watcher cho các module Python
-# → Fix lỗi torch.classes RuntimeError spam terminal
-# Streamlit sẽ không scan torch/chromadb internals nữa
-fileWatcherType = "none"
-
-[browser]
-# Tắt auto-open browser (tuỳ chọn, bỏ comment nếu muốn)
-# gatherUsageStats = false

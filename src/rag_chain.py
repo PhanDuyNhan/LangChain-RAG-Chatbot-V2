@@ -69,11 +69,11 @@ NHIỆM VỤ: Trả lời câu hỏi về quy định học vụ, thủ tục, h
 
 NGUYÊN TẮC:
 1. CHỈ dùng thông tin trong [CONTEXT] bên dưới.
-2. KHÔNG bịa đặt. Nếu không có thông tin, trả lời: "Tôi không tìm thấy thông tin này."
+2. KHÔNG bịa đặt. Nếu không có thông tin rõ ràng trong context, nói rõ là không tìm thấy.
 3. Trả lời bằng tiếng Việt, rõ ràng, dễ hiểu.
 4. Nếu câu hỏi hỏi về điều kiện, thủ tục, hồ sơ, quy trình, học phí hoặc nhiều ý, hãy trả lời ĐẦY ĐỦ các ý chính trong context.
-5. Ưu tiên trả lời dạng gạch đầu dòng hoặc đánh số khi có nhiều điều kiện/bước.
-6. Độ dài vừa phải, thường tối đa khoảng 1500 ký tự; không lan man ngoài context.
+5. Trường "source" phải ghi citation ngắn gọn theo trang/tài liệu đã thấy trong context.
+6. related_topics chỉ lấy các chủ đề liên quan trực tiếp, tối đa 4 mục.
 
 [CONTEXT]
 {context}
@@ -81,9 +81,8 @@ NGUYÊN TẮC:
 [CÂU HỎI]
 {question}
 
-Hãy trả lời trực tiếp cho sinh viên bằng văn bản thuần.
-Không dùng JSON. Không dùng markdown code block.
-Nếu có nhiều ý, trình bày rõ ràng theo dòng hoặc đánh số."""
+Hãy trả về JSON thuần túy, không markdown, không giải thích thêm, đúng schema:
+{{"answer":"cau tra loi bang tieng Viet","source":"Trang X (ten_file.pdf) | Trang Y (ten_file.pdf)","confidence":"high|medium|low","related_topics":["chu de 1","chu de 2"]}}"""
 
 GENERAL_FALLBACK_PROMPT = """Bạn là trợ lý AI hỗ trợ người dùng bằng tiếng Việt.
 
@@ -92,13 +91,14 @@ Câu hỏi dưới đây KHÔNG khớp rõ với tài liệu SGU hiện có, vì
 NGUYÊN TẮC:
 1. Trả lời trung thực, rõ ràng, dễ hiểu.
 2. Nếu câu hỏi cần thông tin chính thức của SGU mà bạn không chắc, hãy nhắc người dùng kiểm tra tài liệu hoặc website chính thức của trường.
-3. Có thể dùng gạch đầu dòng hoặc đánh số nếu có nhiều ý.
-4. Không nhắc đến JSON. Không dùng code block.
+3. related_topics chỉ lấy các chủ đề liên quan trực tiếp, tối đa 4 mục.
+4. Trường "source" luôn ghi: "Ngoài tài liệu SGU (kiến thức chung)".
 
 [CÂU HỎI]
 {question}
 
-Hãy trả lời trực tiếp bằng văn bản thuần."""
+Hãy trả về JSON thuần túy, không markdown, không giải thích thêm, đúng schema:
+{{"answer":"cau tra loi bang tieng Viet","source":"Ngoài tài liệu SGU (kiến thức chung)","confidence":"high|medium|low","related_topics":["chu de 1","chu de 2"]}}"""
 
 _VI_STOPWORDS = {
     "ban", "toi", "tui", "cho", "cac", "nhung", "nhu", "la", "gi", "nao",
@@ -111,6 +111,33 @@ _GENERIC_DOC_TERMS = {
     "sgu", "truong", "dai", "hoc", "sinh", "vien", "phong", "khoa",
     "co", "so", "truonghoc", "daihoc", "sinhvien",
 }
+
+_SGU_INTENT_TERMS = {
+    "hoc phi", "hoc bong", "hoan thi", "bao luu", "tot nghiep", "tin chi",
+    "mon hoc", "chuong trinh", "diem", "gpa", "hoc lai", "cai thien",
+    "lich thi", "hoc vu", "dao tao", "phong dao tao", "giay to", "ho so",
+    "quy trinh", "thu tuc", "quy che", "nganh", "khoa", "lop", "co so",
+    "ky tuc xa", "dang ky mon", "dang ky hoc phan", "mien giam hoc phi",
+    "hoc ky", "bao hiem", "doan", "hoi sinh vien",
+}
+
+_GENERAL_KNOWLEDGE_PATTERNS = [
+    r"\bban biet\b",
+    r"\bcho toi biet\b",
+    r"\bla ai\b",
+    r"\bla gi\b",
+    r"\btieu su\b",
+    r"\bsinh nam\b",
+    r"\bbao nhieu tuoi\b",
+    r"\bo dau\b",
+    r"\bco phai\b",
+    r"\bchu tich\b",
+    r"\btong thong\b",
+    r"\bcau thu\b",
+    r"\bca si\b",
+    r"\bdien vien\b",
+    r"\bnha khoa hoc\b",
+]
 
 
 def _strip_markdown_json(text: str) -> str:
@@ -364,7 +391,7 @@ class RAGChain:
     def __init__(self, force_provider: str = None):
         self.top_k = int(os.getenv("RETRIEVER_TOP_K", "4"))
         self.min_relevance = float(os.getenv("RAG_MIN_RELEVANCE", "0.32"))
-        self.cache_namespace = os.getenv("RAG_CACHE_NAMESPACE", "rag_auto_fallback_v3")
+        self.cache_namespace = os.getenv("RAG_CACHE_NAMESPACE", "rag_auto_fallback_v6")
         # Cache LLM instances → không init lại mỗi lần query
         self._llm_cache: Dict[str, Any] = {}
         self._init_components(force_provider)
@@ -385,8 +412,7 @@ class RAGChain:
         )
 
         # Khởi tạo LLM đầu tiên và cache lại
-        #self.llm, self.provider_name = self._get_or_init_llm(force_provider or "gemini")
-        self.llm, self.provider_name = self._get_or_init_llm(force_provider or "groq")
+        self.llm, self.provider_name = self._get_or_init_llm(force_provider or "gemini")
     def _get_or_init_llm(self, provider_key: str):
         """
         Lấy LLM từ cache hoặc khởi tạo mới.
@@ -421,6 +447,14 @@ class RAGChain:
         normalized = unicodedata.normalize("NFD", (text or "").lower())
         normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
         return normalized
+
+    def _has_sgu_intent(self, question: str) -> bool:
+        normalized_question = self._normalize_match_text(question)
+        return any(term in normalized_question for term in _SGU_INTENT_TERMS)
+
+    def _looks_general_knowledge_question(self, question: str) -> bool:
+        normalized_question = self._normalize_match_text(question)
+        return any(re.search(pattern, normalized_question) for pattern in _GENERAL_KNOWLEDGE_PATTERNS)
 
     def _extract_content_terms(self, question: str) -> List[str]:
         normalized_question = self._normalize_match_text(question)
@@ -490,6 +524,9 @@ class RAGChain:
         best_relevance: float,
         score_source: str,
     ) -> Tuple[bool, str]:
+        if self._looks_general_knowledge_question(question) and not self._has_sgu_intent(question):
+            return True, "general_knowledge_intent"
+
         if not docs:
             return True, "no_documents"
 
@@ -500,6 +537,9 @@ class RAGChain:
 
         if not specific_terms and best_relevance < 0.48:
             return True, "generic_match_only"
+
+        if len(specific_terms) == 1 and not specific_matches and best_relevance < 0.62:
+            return True, "single_specific_term_missing"
 
         if len(specific_terms) >= 2 and not specific_matches:
             return True, "missing_specific_terms"
@@ -651,14 +691,19 @@ class RAGChain:
                 "schema_version": "rag_v1",
             }
 
-        answer_text = _clean_answer_text(raw_answer)
-        confidence = "medium" if len(answer_text) >= 40 else "low"
+        parsed = self._parse_json_response(raw_answer)
+        answer_text = _clean_answer_text(parsed.get("answer", raw_answer))
+        confidence = parsed.get("confidence", "medium" if len(answer_text) >= 40 else "low")
+        if confidence not in {"high", "medium", "low"}:
+            confidence = "medium" if len(answer_text) >= 40 else "low"
+        source = (parsed.get("source") or "").strip() or "Ngoài tài liệu SGU (kiến thức chung)"
+        model_topics = parsed.get("related_topics", [])
 
         return {
             "answer": answer_text or "Tôi chưa thể trả lời câu hỏi ngoài tài liệu ở thời điểm này.",
-            "source": "Ngoài tài liệu SGU (kiến thức chung)",
+            "source": source,
             "confidence": confidence,
-            "related_topics": related_topics or [question.strip().rstrip(" ?")],
+            "related_topics": model_topics or related_topics or [question.strip().rstrip(" ?")],
             "provider": provider_name,
             "retrieved_docs": [],
             "from_cache": False,
@@ -781,8 +826,8 @@ class RAGChain:
         raw_answer, provider_name = self._invoke_with_fallback(
             full_prompt,
             [
-                ("groq", 1),
                 ("gemini", 3),
+                ("groq", 1),
                 ("ollama", 0),
             ],
         )
@@ -810,10 +855,18 @@ class RAGChain:
         if not answer_text:
             answer_text = _clean_answer_text(raw_answer)
 
+        model_source = (parsed.get("source") or "").strip()
+        if not model_source or model_source.lower() in {"không xác định", "khong xac dinh", "không có", "khong co"}:
+            model_source = _build_source_from_docs(retrieved_docs)
+
+        model_confidence = parsed.get("confidence")
+        if model_confidence not in {"high", "medium", "low"}:
+            model_confidence = _estimate_confidence(answer_text, retrieved_docs)
+
         response = {
             "answer": answer_text or "Tôi không tìm thấy thông tin phù hợp trong tài liệu.",
-            "source": _build_source_from_docs(retrieved_docs),
-            "confidence": _estimate_confidence(answer_text, retrieved_docs),
+            "source": model_source,
+            "confidence": model_confidence,
             "related_topics": parsed.get("related_topics") or related_topics,
             "provider": provider_name,
             "retrieved_docs": retrieved_preview,

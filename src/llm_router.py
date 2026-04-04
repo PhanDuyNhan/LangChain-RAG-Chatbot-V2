@@ -35,7 +35,8 @@ def _try_gemini():
         model=GEMINI_MODEL,
         google_api_key=GOOGLE_API_KEY,
         temperature=0.1,
-        max_output_tokens=int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "960")),
+        max_tokens=int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "960")),
+        model_kwargs={"response_mime_type": "application/json"},
     )
 
 
