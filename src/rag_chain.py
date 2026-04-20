@@ -25,6 +25,7 @@ import time
 import unicodedata
 from typing import Dict, Any, Optional, Tuple, List
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -99,6 +100,23 @@ NGUYÊN TẮC:
 
 Hãy trả về JSON thuần túy, không markdown, không giải thích thêm, đúng schema:
 {{"answer":"cau tra loi bang tieng Viet","source":"Ngoài tài liệu SGU (kiến thức chung)","confidence":"high|medium|low","related_topics":["chu de 1","chu de 2"]}}"""
+
+JSON_RETRY_SUFFIX = """
+
+YEU CAU BAT BUOC:
+- Chi tra ve duy nhat 1 object JSON hop le.
+- Khong duoc bi do JSON hoac bi cat giua chung.
+- Neu trong chuoi co dau ", phai escape thanh \\"
+- Khong viet them markdown, giai thich, hoac text nao ngoai JSON.
+"""
+
+
+class RAGResponseSchema(BaseModel):
+    answer: str
+    source: str = "Khong xac dinh"
+    confidence: str = "medium"
+    related_topics: List[str] = Field(default_factory=list)
+
 
 _VI_STOPWORDS = {
     "ban", "toi", "tui", "cho", "cac", "nhung", "nhu", "la", "gi", "nao",
@@ -199,6 +217,39 @@ def _extract_json_fragment(text: str) -> Optional[dict]:
             except Exception:
                 pass
     return None
+
+
+def _response_to_text(response: Any) -> str:
+    content = getattr(response, "content", response)
+    if isinstance(content, str):
+        return content
+
+    if isinstance(content, list):
+        chunks = []
+        for item in content:
+            if isinstance(item, str) and item.strip():
+                chunks.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if text:
+                    chunks.append(str(text))
+        if chunks:
+            return "\n".join(chunks).strip()
+
+    if isinstance(response, BaseModel):
+        return json.dumps(response.model_dump(), ensure_ascii=False)
+
+    if isinstance(response, dict):
+        return json.dumps(response, ensure_ascii=False)
+
+    return str(content or "").strip()
+
+
+def _is_complete_rag_json(text: str) -> bool:
+    data = _extract_json_fragment(text)
+    if not isinstance(data, dict):
+        return False
+    return bool(str(data.get("answer", "")).strip())
 
 
 def _extract_string_field(text: str, key: str) -> Optional[str]:
@@ -391,7 +442,7 @@ class RAGChain:
     def __init__(self, force_provider: str = None):
         self.top_k = int(os.getenv("RETRIEVER_TOP_K", "4"))
         self.min_relevance = float(os.getenv("RAG_MIN_RELEVANCE", "0.32"))
-        self.cache_namespace = os.getenv("RAG_CACHE_NAMESPACE", "rag_auto_fallback_v6")
+        self.cache_namespace = os.getenv("RAG_CACHE_NAMESPACE", "rag_auto_fallback_v7")
         # Cache LLM instances → không init lại mỗi lần query
         self._llm_cache: Dict[str, Any] = {}
         self._init_components(force_provider)
@@ -603,7 +654,12 @@ class RAGChain:
         keyword_score = self._keyword_overlap_score(question, docs)
         return docs, keyword_score, [], "keyword_overlap"
 
-    def _invoke_with_fallback(self, prompt: str, fallback_order: List[Tuple[str, int]]) -> Tuple[Optional[str], str]:
+    def _invoke_with_fallback(
+        self,
+        prompt: str,
+        fallback_order: List[Tuple[str, int]],
+        expect_json: bool = False,
+    ) -> Tuple[Optional[str], str]:
         raw_answer = None
         provider_name = self.provider_name
 
@@ -617,23 +673,37 @@ class RAGChain:
             success = False
             for attempt in range(max_retries + 1):
                 try:
+                    attempt_prompt = prompt if attempt == 0 else prompt + JSON_RETRY_SUFFIX
+                    runnable = llm
+                    if expect_json and hasattr(llm, "with_structured_output"):
+                        try:
+                            runnable = llm.with_structured_output(RAGResponseSchema)
+                        except Exception:
+                            runnable = llm
                     if provider_key == "gemini" and _daily_tracker:
                         if not _daily_tracker.can_consume("gemini_llm", GEMINI_LLM_RPD_SOFT):
                             print("[RAG] Gemini đạt soft cap theo ngày → fallback tiếp theo")
                             break
                     if provider_key == "gemini" and _llm_limiter:
                         with _llm_limiter:
-                            response = llm.invoke([HumanMessage(content=prompt)])
+                            response = runnable.invoke([HumanMessage(content=attempt_prompt)])
                     else:
-                        response = llm.invoke([HumanMessage(content=prompt)])
+                        response = runnable.invoke([HumanMessage(content=attempt_prompt)])
 
-                    raw_answer = response.content
+                    candidate_answer = _response_to_text(response)
                     provider_name = pname
                     self.provider_name = pname
                     if _counter and provider_key in {"gemini", "groq"}:
                         _counter.increment("gemini_llm" if provider_key == "gemini" else "groq")
                     if provider_key == "gemini" and _daily_tracker:
                         _daily_tracker.increment("gemini_llm")
+                    if expect_json and not _is_complete_rag_json(candidate_answer):
+                        if attempt < max_retries:
+                            print(f"[RAG] {pname} tra JSON chua hoan chinh -> retry lai")
+                            continue
+                        print(f"[RAG] {pname} tra JSON chua hoan chinh -> fallback provider ke tiep")
+                        break
+                    raw_answer = candidate_answer
                     success = True
                     break
 
@@ -673,6 +743,7 @@ class RAGChain:
                 ("gemini", 3),
                 ("ollama", 0),
             ],
+            expect_json=True,
         )
 
         if raw_answer is None:
@@ -830,6 +901,7 @@ class RAGChain:
                 ("groq", 1),
                 ("ollama", 0),
             ],
+            expect_json=True,
         )
 
         if raw_answer is None:
