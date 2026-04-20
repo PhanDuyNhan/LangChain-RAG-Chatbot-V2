@@ -77,7 +77,8 @@ PHÂN LOẠI VÀ TRÍCH XUẤT:
 - BANG DIEM:
   extracted_data nên ngắn gọn, ví dụ: {"hoc_ky":"","gpa_uoc_tinh":"","mon_noi_bat":["Mon A (8.5)","Mon B (6.0)"]}
 - LICH THI:
-  extracted_data nên ngắn gọn, ví dụ: {"ky_thi":"","mon_thi_dau_tien":"","ngay_thi_dau_tien":"dd/mm/yyyy","gio_thi_dau_tien":"HH:MM","phong_thi_dau_tien":"","co_trung_lich":"co|khong","mon_hoc_chinh":["Mon A","Mon B"]}
+  extracted_data nên ngắn gọn, ví dụ: {"ky_thi":"","mon_thi_dau_tien":"","ngay_thi_dau_tien":"dd/mm/yyyy","gio_thi_dau_tien":"HH:MM","phong_thi_dau_tien":"",
+  "co_trung_lich":"co|khong","mon_hoc_chinh":["Mon A","Mon B"]}
 - THONG BAO:
   extracted_data nên ngắn gọn, ví dụ: {"tieu_de":"","deadline":"","doi_tuong":"","yeu_cau":""}
 - MAN HINH / DASHBOARD / SCREENSHOT:
@@ -96,7 +97,8 @@ YÊU CẦU CÂU TRẢ LỜI:
 - extracted_data không cần liệt kê toàn bộ bảng dài. Ưu tiên các trường cốt lõi nhất.
 
 Trả về JSON thuần túy (không markdown, không ```json):
-{"image_type":"loai tai lieu","extracted_data":{"key":"value"},"reasoning":"suy luan ngan gon","answer":"tra loi cau hoi nguoi dung","recommendations":["goi y 1","goi y 2"],"confidence":"high/medium/low"}"""
+{"image_type":"loai tai lieu","extracted_data":{"key":"value"},"reasoning":"suy luan ngan gon","answer":"tra loi cau hoi nguoi dung","recommendations":["goi y 1","goi y 2"],
+"confidence":"high/medium/low"}"""
 
 VIDEO_SYSTEM_PROMPT = """Bạn là trợ lý phân tích nội dung đa phương thức cho sinh viên SGU.
 
@@ -109,7 +111,8 @@ Yêu cầu phân tích:
 - Người tham gia và vai trò (nếu là cuộc họp)
 
 Trả về JSON thuần túy, ngắn gọn:
-{{"content_type":"loai noi dung","summary":["diem 1","diem 2"],"action_items":[{{"task":"viec lam","assignee":"nguoi thuc hien","deadline":"han chot"}}],"key_moments":["thoi diem quan trong"],"answer":"tra loi cau hoi","confidence":"high/medium/low"}}"""
+{{"content_type":"loai noi dung","summary":["diem 1","diem 2"],"action_items":[{{"task":"viec lam","assignee":"nguoi thuc hien","deadline":"han chot"}}],"key_moments":["thoi diem quan trong"],
+"answer":"tra loi cau hoi","confidence":"high/medium/low"}}"""
 
 def _strip_markdown_json(text: str) -> str:
     text = text.strip()
