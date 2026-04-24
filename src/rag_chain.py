@@ -43,7 +43,6 @@ try:
         get_llm_limiter,
         get_counter,
         get_daily_tracker,
-        GEMINI_LLM_RPD_SOFT,
     )
     _rag_cache   = get_rag_cache()
     _llm_limiter = get_llm_limiter()
@@ -675,15 +674,19 @@ class RAGChain:
                 try:
                     attempt_prompt = prompt if attempt == 0 else prompt + JSON_RETRY_SUFFIX
                     runnable = llm
-                    if expect_json and hasattr(llm, "with_structured_output"):
+                    # Groq llama-3.1-8b can fail with tool_use_failed when LangChain
+                    # forces structured output via tool calling, so keep it on plain
+                    # text JSON prompting and let the existing parser normalize it.
+                    should_use_structured_output = (
+                        expect_json
+                        and provider_key != "groq"
+                        and hasattr(llm, "with_structured_output")
+                    )
+                    if should_use_structured_output:
                         try:
                             runnable = llm.with_structured_output(RAGResponseSchema)
                         except Exception:
                             runnable = llm
-                    if provider_key == "gemini" and _daily_tracker:
-                        if not _daily_tracker.can_consume("gemini_llm", GEMINI_LLM_RPD_SOFT):
-                            print("[RAG] Gemini đạt soft cap theo ngày → fallback tiếp theo")
-                            break
                     if provider_key == "gemini" and _llm_limiter:
                         with _llm_limiter:
                             response = runnable.invoke([HumanMessage(content=attempt_prompt)])

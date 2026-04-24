@@ -940,17 +940,40 @@ def analyze_image(image_bytes: bytes, question: str) -> Dict[str, Any]:
                 ),
             )
 
+        def _is_temporary_vision_error(err_text: str) -> bool:
+            lowered = err_text.lower()
+            return any(marker in lowered for marker in [
+                "503",
+                "unavailable",
+                "high demand",
+                "currently experiencing high demand",
+                "temporarily unavailable",
+                "timeout",
+                "internal",
+            ])
+
         if _daily_tracker and not _daily_tracker.can_consume("gemini_vision", GEMINI_VISION_RPD_SOFT):
             return _error_response(
                 "quota",
                 "Đã chạm soft cap Gemini trong ngày để tránh hết quota free. Hãy thử lại vào ngày mới hoặc dùng fallback."
             )
 
-        if _vision_limiter:
-            with _vision_limiter:
-                response = _call()
-        else:
-            response = _call()
+        for attempt in range(4):
+            try:
+                if _vision_limiter:
+                    with _vision_limiter:
+                        response = _call()
+                else:
+                    response = _call()
+                break
+            except Exception as e:
+                err = str(e)
+                if attempt < 3 and _is_temporary_vision_error(err):
+                    delay = 2 * (2 ** attempt)
+                    print(f"[Vision] Gemini tam thoi qua tai, retry sau {delay}s ({attempt + 1}/3)...")
+                    time.sleep(delay)
+                    continue
+                raise
 
         if _counter:
             _counter.increment("gemini_vision")
@@ -973,6 +996,11 @@ def analyze_image(image_bytes: bytes, question: str) -> Dict[str, Any]:
             return _error_response(
                 "quota",
                 "Hết quota Gemini Vision. Chờ 1 phút rồi thử lại (reset lúc 07:00 VN)."
+            )
+        if "503" in err or "UNAVAILABLE" in err or "high demand" in err.lower():
+            return _error_response(
+                "unavailable",
+                "Gemini Vision dang qua tai tam thoi. App da tu thu lai vai lan nhung chua thanh cong, vui long thu lai sau it phut."
             )
         return _error_response("api", f"Lỗi Gemini API: {err[:200]}")
 
@@ -1080,17 +1108,40 @@ def analyze_media_file(
                 ),
             )
 
+        def _is_temporary_file_api_error(err_text: str) -> bool:
+            lowered = err_text.lower()
+            return any(marker in lowered for marker in [
+                "503",
+                "unavailable",
+                "high demand",
+                "currently experiencing high demand",
+                "temporarily unavailable",
+                "timeout",
+                "internal",
+            ])
+
         if _daily_tracker and not _daily_tracker.can_consume("gemini_vision", GEMINI_VISION_RPD_SOFT):
             return _media_error_response(
                 "quota",
                 "Đã chạm soft cap Gemini trong ngày để tránh hết quota free. Hãy thử lại vào ngày mới hoặc dùng fallback."
             )
 
-        if _vision_limiter:
-            with _vision_limiter:
-                response = _call()
-        else:
-            response = _call()
+        for attempt in range(4):
+            try:
+                if _vision_limiter:
+                    with _vision_limiter:
+                        response = _call()
+                else:
+                    response = _call()
+                break
+            except Exception as e:
+                err = str(e)
+                if attempt < 3 and _is_temporary_file_api_error(err):
+                    delay = 3 * (2 ** attempt)
+                    print(f"[File API] Gemini tam thoi qua tai, retry sau {delay}s ({attempt + 1}/3)...")
+                    time.sleep(delay)
+                    continue
+                raise
 
         if _counter:
             _counter.increment("gemini_vision")
@@ -1107,6 +1158,11 @@ def analyze_media_file(
         err = str(e)
         if "429" in err or "quota" in err.lower() or "RESOURCE_EXHAUSTED" in err:
             return _media_error_response("quota", "Hết quota Gemini. Reset lúc 07:00 VN.")
+        if "503" in err or "UNAVAILABLE" in err or "high demand" in err.lower():
+            return _media_error_response(
+                "unavailable",
+                "Gemini File API dang qua tai tam thoi. App da tu thu lai vai lan nhung chua thanh cong, vui long thu lai sau it phut."
+            )
         return _media_error_response("api", f"Lỗi File API: {err[:200]}")
 
     finally:
