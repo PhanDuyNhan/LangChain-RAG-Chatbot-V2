@@ -1,7 +1,7 @@
 # Semantic Chunking — Tài liệu giải thích module
 
 > **File code:** [`src/semantic_chunking.py`](../src/semantic_chunking.py)
-
+****
 ---
 
 ## 1. Mục tiêu
