@@ -1,6 +1,7 @@
 # --- LangChain core ---
 langchain==0.3.25
 langchain-community==0.3.23
+langchain-experimental==0.3.4
 
 # --- LangChain integrations ---
 langchain-text-splitters
